@@ -1,0 +1,49 @@
+{
+  "name": "jumplab",
+  "version": "0.1.0",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "start": "expo start --dev-client",
+    "ios": "expo run:ios",
+    "typecheck": "tsc --noEmit",
+    "lint": "node scripts/check-source.mjs",
+    "test:unit": "node --test tests/*.test.ts",
+    "test:native": "sh scripts/test-native.sh",
+    "test:integration": "node scripts/backend-test.mjs",
+    "test:security": "node scripts/backend-test.mjs --security",
+    "test:ui": "jest --runInBand",
+    "evaluate:video": "node scripts/evaluate.mjs",
+    "build:ios:simulator": "sh scripts/build-ios.sh",
+    "check:dependencies": "npm audit --omit=dev",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "check:docs": "node scripts/check-docs.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.118.0",
+    "expo": "58.0.16",
+    "expo-crypto": "58.0.7",
+    "expo-secure-store": "58.0.2",
+    "expo-sqlite": "58.0.13",
+    "react": "19.3.0",
+    "react-native": "0.88.0",
+    "react-native-safe-area-context": "5.10.1"
+  },
+  "devDependencies": {
+    "@testing-library/react-native": "14.1.0",
+    "@types/jest": "30.0.0",
+    "@types/react": "19.3.0",
+    "jest": "30.5.2",
+    "jest-expo": "58.0.11",
+    "typescript": "6.0.3"
+  },
+  "expo": {
+    "autolinking": {
+      "nativeModulesDir": "./modules"
+    }
+  },
+  "type": "module"
+}

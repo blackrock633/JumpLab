@@ -1,0 +1,11 @@
+node_modules/
+.cache/
+.expo/
+.env
+ios/Pods/
+ios/build/
+ios/.xcode.env.local
+dist/
+*.xcuserstate
+*.xcuserdatad/
+fixtures/media/

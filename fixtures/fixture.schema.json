@@ -1,0 +1,14 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "type":"object", "required":["version","clips"],
+  "properties":{"version":{"const":1},"clips":{"type":"array","items":{"type":"object",
+    "required":["id","file","sha256","jumpType","category","originalFPS","reference","expected"],
+    "properties":{
+      "id":{"type":"string","minLength":1}, "file":{"type":"string"}, "sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},
+      "jumpType":{"enum":["standing","running","repeated"]}, "category":{"enum":["original-cfr","original-vfr","slow-motion","exported","failure"]},
+      "originalFPS":{"type":"number","minimum":24,"maximum":240},
+      "reference":{"type":"object","required":["method","annotator","uncertaintySeconds"],"properties":{"method":{"type":"string","minLength":1},"annotator":{"type":"string","minLength":1},"uncertaintySeconds":{"type":"number","minimum":0}}},
+      "expected":{"type":"object","required":["outcome","events"],"properties":{"outcome":{"enum":["accept","reject"]},"reason":{"type":"string"},"events":{"type":"array","items":{"type":"object","required":["takeoffSeconds","landingSeconds"],"properties":{"takeoffSeconds":{"type":"number"},"landingSeconds":{"type":"number"}}}}}}
+    }
+  }}}
+}

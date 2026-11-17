@@ -1,0 +1,8 @@
+{
+  "expo": {
+    "name": "JumpLab", "slug": "jumplab", "version": "0.1.0",
+    "scheme": "jumplab", "orientation": "portrait", "userInterfaceStyle": "automatic",
+    "ios": {"bundleIdentifier": "app.jumplab.ios", "supportsTablet": false},
+    "plugins": ["expo-secure-store", "expo-sqlite"]
+  }
+}

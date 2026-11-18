@@ -1,19 +1,22 @@
 const finite = n => typeof n === 'number' && Number.isFinite(n);
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const nonempty = value => typeof value === 'string' && value.trim().length > 0;
 export function validateFixtures(manifest) {
-  if (manifest.version !== 1 || !Array.isArray(manifest.clips)) throw Error('Fixture manifest version 1 with clips[] required.');
+  if (!object(manifest) || manifest.version !== 1 || !Array.isArray(manifest.clips)) throw Error('Fixture manifest version 1 with clips[] required.');
   const ids = new Set();
   for (const c of manifest.clips) {
-    if (!c.id || ids.has(c.id) || typeof c.file !== 'string' || !/^[a-f0-9]{64}$/.test(c.sha256) ||
+    if (!object(c) || !nonempty(c.id) || ids.has(c.id) || !nonempty(c.file) || typeof c.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(c.sha256) ||
       !['standing', 'running', 'repeated'].includes(c.jumpType) || !['original-cfr', 'original-vfr', 'slow-motion', 'exported', 'failure'].includes(c.category) ||
       !finite(c.originalFPS) || c.originalFPS < 24 || c.originalFPS > 240 ||
-      !c.reference?.method || !c.reference?.annotator || !finite(c.reference.uncertaintySeconds) || c.reference.uncertaintySeconds < 0 ||
-      !['accept', 'reject'].includes(c.expected?.outcome) || !Array.isArray(c.expected?.events)) throw Error(`Invalid fixture: ${c.id ?? '(missing id)'}`);
+      !object(c.reference) || !nonempty(c.reference.method) || !nonempty(c.reference.annotator) || !finite(c.reference.uncertaintySeconds) || c.reference.uncertaintySeconds < 0 ||
+      !object(c.expected) || !['accept', 'reject'].includes(c.expected.outcome) || !Array.isArray(c.expected.events) ||
+      ('reason' in c.expected && typeof c.expected.reason !== 'string')) throw Error(`Invalid fixture: ${c?.id ?? '(missing id)'}`);
     ids.add(c.id);
     if (c.expected.outcome === 'accept' && !c.expected.events.length) throw Error('Accepted reference requires complete annotated jumps.');
-    if (c.expected.outcome === 'reject' && (!c.expected.reason || c.expected.events.length)) throw Error('Rejected fixture needs a reason and no valid events.');
+    if (c.expected.outcome === 'reject' && (!nonempty(c.expected.reason) || c.expected.events.length)) throw Error('Rejected fixture needs a reason and no valid events.');
     let last = -Infinity;
     for (const e of c.expected.events) {
-      if (!finite(e.takeoffSeconds) || !finite(e.landingSeconds) || e.takeoffSeconds < 0 || e.takeoffSeconds <= last || e.landingSeconds <= e.takeoffSeconds || e.landingSeconds - e.takeoffSeconds > 1.5) throw Error(`Invalid reference event: ${c.id}`);
+      if (!object(e) || !finite(e.takeoffSeconds) || !finite(e.landingSeconds) || e.takeoffSeconds < 0 || e.takeoffSeconds <= last || e.landingSeconds <= e.takeoffSeconds || e.landingSeconds - e.takeoffSeconds > 1.5) throw Error(`Invalid reference event: ${c.id}`);
       last = e.landingSeconds;
     }
   }

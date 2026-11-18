@@ -1,7 +1,8 @@
 export type JumpType = 'standing' | 'running' | 'repeated';
-export const METHOD = 'vision-feet-flight/0.2-unvalidated';
+export const METHOD = 'vision-feet-flight/0.3-unvalidated';
+export const PREVIOUS_METHOD = 'vision-feet-flight/0.2-unvalidated';
 export const LEGACY_METHOD = 'vision-feet-flight/0.1-unvalidated';
-export type MeasurementMethod = typeof METHOD | typeof LEGACY_METHOD;
+export type MeasurementMethod = typeof METHOD | typeof PREVIOUS_METHOD | typeof LEGACY_METHOD;
 export const GRAVITY = 9.80665;
 export type Mapping = { playbackStart: number; playbackEnd: number; captureStart: number; captureEnd: number };
 export type Timing = {
@@ -51,9 +52,10 @@ export function heightMeters(seconds: number): number {
   return GRAVITY * seconds * seconds / 8;
 }
 export type Evidence = { takeoff: [number, number]; landing: [number, number] };
+type SavedTiming = Omit<Timing, 'timestamps'> & { presentationStart?: number; presentationEnd?: number; frameCount?: number };
 export type JumpResult = {
   id: string; type: JumpType; method: MeasurementMethod; createdAt: string; airtime: number; heightM: number;
-  heightRangeM: [number, number]; airtimeRange: [number, number]; timing: Timing;
+  heightRangeM: [number, number]; airtimeRange: [number, number]; timing: SavedTiming;
   evidence: Evidence; confidence: 'experimental'; trainingEligible: false;
 };
 export function measurement(id: string, type: JumpType, evidence: Evidence, timing: Timing, createdAt: string): JumpResult {
@@ -68,20 +70,26 @@ function measuredEvent(id: string, type: JumpType, evidence: Evidence, timing: T
   const low = times[2]! - times[1]!, high = times[3]! - times[0]!;
   const airtime = (low + high) / 2;
   if (low < 0.12 || high > 1.5) throw Error('Insufficient temporal evidence.');
-  return { id, type, method: METHOD, createdAt, airtime, heightM: heightMeters(airtime),
-    airtimeRange: [low, high], heightRangeM: [heightMeters(low), heightMeters(high)], timing, evidence,
+  const { timestamps, ...provenance } = timing;
+  return { id: id.toLowerCase(), type, method: METHOD, createdAt, airtime, heightM: heightMeters(airtime),
+    airtimeRange: [low, high], heightRangeM: [heightMeters(low), heightMeters(high)],
+    timing: { ...provenance, presentationStart: timestamps[0], presentationEnd: timestamps.at(-1), frameCount: timestamps.length }, evidence,
     confidence: 'experimental', trainingEligible: false };
 }
-export type DecodedAnalysis = { timestamps: number[]; events: Evidence[]; playbackFPS: number };
-export function acceptedMeasurements(analysis: DecodedAnalysis, ids: string[], type: JumpType, fps: number, confirmed: boolean, createdAt: string) {
+export type DecodedAnalysis = { timestamps: number[]; events: Evidence[]; playbackFPS: number; trailingPartial?: boolean; detectorVersion?: number };
+export function acceptedMeasurements(analysis: DecodedAnalysis, ids: string[], type: JumpType, fps: number, confirmed: boolean, createdAt: string, legacyReceipt = false): JumpResult[] {
   if (!['standing', 'running', 'repeated'].includes(type) || !finite(Date.parse(createdAt)) ||
-      !analysis.events.length || analysis.events.length !== ids.length || new Set(ids).size !== ids.length ||
+      !analysis.events.length || analysis.events.length !== ids.length || new Set(ids.map(id => id.toLowerCase())).size !== ids.length ||
       (type !== 'repeated' && ids.length !== 1) ||
       analysis.events.some((event, i) => i > 0 && event.takeoff[0] < analysis.events[i - 1]!.landing[1])) throw Error('Invalid or incomplete jump sequence.');
   const timing: Timing = { originalFPS: fps, playbackFPS: analysis.playbackFPS, kind: 'original', confirmedOriginal: confirmed, mappings: [], timestamps: analysis.timestamps };
   validateTiming(timing);
   const frames = new Set(timing.timestamps);
-  return analysis.events.map((event, i) => measuredEvent(ids[i]!, type, event, timing, createdAt, frames));
+  return analysis.events.map((event, i) => {
+    const result = measuredEvent(ids[i]!, type, event, timing, createdAt, frames);
+    // Uncommitted receipts written by earlier builds predate the camera check.
+    return legacyReceipt ? { ...result, method: PREVIOUS_METHOD } : result;
+  });
 }
 export function compatible(results: JumpResult[], type: JumpType, method: MeasurementMethod = METHOD): JumpResult[] {
   return results.filter(r => r.type === type && r.method === method).sort((a, b) => a.createdAt.localeCompare(b.createdAt));

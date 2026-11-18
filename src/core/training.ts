@@ -27,6 +27,9 @@ export function validDate(value: string) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 }
 export function localDate(d = new Date()) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+export function canOpenWorkout(session: Session, completed: boolean, now = new Date()) {
+  return completed || session.scheduledOn === localDate(now);
+}
 export function futureProfile(p: Profile, completions: (string | null)[], now = new Date()): Profile {
   const dates = completions.filter((t): t is string => t !== null).map(Date.parse).filter(Number.isFinite);
   // Three calendar dates after a completion conservatively leaves >=48 hours at any scheduled hour.

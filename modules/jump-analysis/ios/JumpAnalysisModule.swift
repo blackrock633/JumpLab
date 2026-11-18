@@ -94,9 +94,12 @@ public final class JumpAnalysisModule: Module {
       do { return try await self.engine.inspect(url) }
       catch { try? FileManager.default.removeItem(at: url); throw error }
     }
-    AsyncFunction("setAccount") { (owner: String?) in
-      guard owner == nil || UUID(uuidString: owner!) != nil else { throw DetectionFailure.unsuitable("Invalid analysis account.") }
-      try self.receiptLock.withLock {
+    AsyncFunction("setAccount") { (owner: String?, preserve: String?) -> Bool in
+      guard [owner, preserve].compactMap({ $0 }).allSatisfy({ UUID(uuidString: $0) != nil }) else {
+        throw DetectionFailure.unsuitable("Invalid analysis account.")
+      }
+      return try self.receiptLock.withLock {
+        if let preserve = preserve, FileManager.default.fileExists(atPath: self.receipts.appendingPathComponent(preserve).path) { return false }
         if self.receiptOwner != owner {
           self.receiptEpoch += 1
           self.receiptOwner = nil
@@ -105,6 +108,7 @@ public final class JumpAnalysisModule: Module {
         }
         try self.prepareReceipts(owner: owner)
         self.receiptOwner = owner
+        return true
       }
     }
     AsyncFunction("recoverAnalysis") { (owner: String) -> [String: Any]? in
@@ -158,7 +162,7 @@ public final class JumpAnalysisModule: Module {
       let analysis = try await self.engine.run(url, fps: fps, type: type, deleteAfter: false, cancellation: cancellation)
       let events = analysis["events"] as? [[String: [Double]]] ?? []
       let value: [String: Any] = ["id": id, "analysis": analysis, "type": type, "fps": fps,
-        "confirmed": confirmed, "ids": events.map { _ in UUID().uuidString },
+        "confirmed": confirmed, "ids": events.map { _ in UUID().uuidString.lowercased() },
         "createdAt": ISO8601DateFormatter().string(from: Date())]
       try self.receiptLock.withLock {
         guard self.receiptOwner == owner, self.receiptEpoch == epoch, !FileManager.default.fileExists(atPath: receipt.path) else {

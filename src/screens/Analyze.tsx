@@ -38,7 +38,7 @@ export function Analyze({ owner, onSaved }: { owner: string; onSaved: () => void
       if (!mounted.current) { if (next) await Native.discard(next.id); return; }
       setClip(next); imported.current = next?.id ?? null; setConfirmed(false);
       setFPS(next ? String(Math.round(next.playbackFPS * 100) / 100) : '');
-      setStatus(next ? next.hasRetiming ? 'Slow-motion mapping detected. Import an original unretimed recording.' : 'Playback FPS prefilled. Confirm it matches your camera’s original recording FPS.' : 'Import cancelled. You can choose another clip.');
+      setStatus(next ? next.hasRetiming ? 'Edited or unresolved timing detected. Import an original unretimed recording.' : 'Playback FPS prefilled. Confirm it matches your camera’s original recording FPS.' : 'Import cancelled. You can choose another clip.');
     } catch { if (mounted.current) { setClip(null); setStatus('Video unavailable or unsupported. Use a local 1–30 second original video under 250 MB, up to 4K. If Photos access is restricted, review Settings and try again.'); } }
     finally { if (mounted.current) setPhase('idle'); }
   }
@@ -63,12 +63,18 @@ export function Analyze({ owner, onSaved }: { owner: string; onSaved: () => void
     if (mounted.current) {
       setUnsaved(null); setRecoverable(false);
       if (!found) setStatus('No estimates are waiting to be saved. You can import another video.');
-      if (found) { setResults(found); setStatus('Saved on this iPhone. Experimental estimates; real-video accuracy has not been validated.'); onSaved(); }
+      if (found) {
+        setResults(found);
+        setStatus(receipt?.analysis.trailingPartial
+          ? 'Complete jumps saved. The final jump was skipped because its landing was incomplete.'
+          : 'Saved on this iPhone. Real-video accuracy is unverified.');
+        onSaved();
+      }
     }
   }
   const totals = summary(results);
   return <View><Copy heading>Analyze a jump</Copy>
-    <Copy>Film one athlete from the side with a fixed camera, full body and both feet visible, bright light and a level landing area. Begin with a quiet stance for half a second and include the complete landing.</Copy>
+    <Copy>Film one athlete from the side with a fixed camera, full body and both feet visible, bright light and a level landing area. Keep a textured, stationary background visible in the corners. Begin with a quiet stance for half a second and include the complete landing.</Copy>
     <Copy>Use an original unretimed 24–240 FPS clip, 1–30 seconds, up to 4K / 250 MB. No frame selection or calibration required. Slow-motion edits and exports are currently unsupported.</Copy>
     <Choices label="Jump type" values={['standing', 'running', 'repeated']} value={type} onChange={setType} />
     <Button title="Choose video" testID="choose-video" disabled={phase !== 'idle' || unsaved !== null} onPress={() => void pick()} />

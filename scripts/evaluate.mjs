@@ -31,7 +31,7 @@ try {
         const values = acceptedMeasurements(actual.analysis, actual.analysis.events.map((_, i) => String(i)), c.jumpType, c.originalFPS, true, new Date().toISOString());
         actual.outcome = 'accept';
         for (const value of values) {
-          const origin = value.timing.timestamps[0];
+          const origin = value.timing.presentationStart;
           const [a, b] = value.evidence.takeoff, [c, d] = value.evidence.landing;
           detected.push({ takeoffSeconds: (a + b) / 2 - origin, landingSeconds: (c + d) / 2 - origin });
         }

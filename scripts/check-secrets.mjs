@@ -25,7 +25,7 @@ async function scanBundle(dir) {
     }
   }
 }
-await scanBundle('.cache/ios-export');
+await scanBundle(process.argv[2] ?? '.cache/ios-export');
 await scanBundle('.cache/DerivedData/Build/Products/Debug-iphonesimulator/JumpLab.app');
 const history = spawnSync('git', ['log', '--all', '-p', '--no-ext-diff', '--no-textconv', '--format='], {
   encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,

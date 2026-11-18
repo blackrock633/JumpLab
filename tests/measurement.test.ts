@@ -14,7 +14,10 @@ test('CFR uses timestamp differences with a nonzero origin', () => {
   assert.ok(Math.abs(r.airtime - 0.4) < 1e-12); assert.ok(r.airtimeRange[0] < 0.4 && r.airtimeRange[1] > 0.4);
   assert.equal(r.trainingEligible, false); assert.equal(r.confidence, 'experimental');
   assert.match(displayHeight(r), /cm.*timing range/);
-  assert.deepEqual(JSON.parse(JSON.stringify(r)).timing, t);
+  const { timestamps, ...provenance } = t;
+  assert.deepEqual(JSON.parse(JSON.stringify(r)).timing, {
+    ...provenance, presentationStart: timestamps[0], presentationEnd: timestamps.at(-1), frameCount: timestamps.length,
+  });
 });
 test('VFR retains individual presentation intervals', () => {
   const t = timing(30); t.timestamps = [2, 2.02, 2.06, 2.09, 2.13, 2.16]; validateTiming(t);

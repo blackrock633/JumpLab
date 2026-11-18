@@ -40,7 +40,7 @@ try {
   const discovery = await request('/rest/v1/', setupKey, 'GET', undefined, true);
   const paths = Object.keys(discovery.data?.paths ?? {});
   const tables = paths.filter(path => /^\/[a-z_]+$/.test(path)).map(path => path.slice(1)).sort();
-  check(discovery.ok && JSON.stringify(tables) === JSON.stringify(['adaptations','jump_results','plans','prescriptions','profiles','workouts']), 'applied exposed relations match the security inventory');
+  check(discovery.ok && JSON.stringify(tables) === JSON.stringify(['adaptations','jump_history','jump_results','plans','prescriptions','profiles','workouts']), 'applied exposed relations match the security inventory');
   check(JSON.stringify(paths.filter(path => path.startsWith('/rpc/')).sort()) === JSON.stringify(['/rpc/active_account','/rpc/delete_account','/rpc/save_record']), 'applied exposed RPCs match the security inventory');
   const pId = randomUUID();
   check((await rpc(a.token, 'profile', pId, profile)).data === 1, 'save owned profile');
@@ -81,6 +81,10 @@ try {
     check(duplicate.every(r => r.ok && r.data === 1), 'concurrent workout and jump replays preserve revision and identity');
     const badJump = await rpc(token, 'jump', id, { ...jump, trainingEligible: true });
     check(!badJump.ok && badJump.data?.code === '22023', 'forged training eligibility rejected');
+    for (const createdAt of ['not a timestamp', 'infinity', '2026-02-31T12:00:00Z', '2999-01-01T00:00:00Z']) {
+      const bad = await rpc(token, 'jump', id, { ...jump, createdAt });
+      check(!bad.ok && bad.data?.code === '22023', 'unusable analysis timestamp rejected before idempotency check');
+    }
     const badWorkout = await rpc(token, 'workout', s.workoutId, { ...workout, sets: [{ exerciseId: 'outside', index: 0, reps: 1, loadKg: null, done: true }] });
     check(!badWorkout.ok && badWorkout.data?.code === '22023', 'unrelated exercise rejected');
     return { plan, jump, workout, planId };
@@ -127,6 +131,12 @@ try {
   }
   check(!(await rpc(b.token, 'profile', randomUUID(), profile)).ok, 'old token cannot resurrect deleted account');
   check(!(await request('/auth/v1/token?grant_type=refresh_token', key, 'POST', { refresh_token: b.refresh })).ok, 'deleted refresh token rejected');
+  // Cleanup inventory separately checks physical removal using the isolated
+  // test setup credential. The client-permission assertions above use JWTs.
+  for (const table of tables.filter(table => table !== 'jump_history')) {
+    const residual = await request(`/rest/v1/${table}?select=id&user_id=eq.${b.id}&limit=1`, setupKey, 'GET', undefined, true);
+    check(residual.ok && Array.isArray(residual.data) && residual.data.length === 0, `${table}: no residual rows at cleanup`);
+  }
   if (process.argv.includes('--security')) {
     // Local email capture only. The reserved addresses belong to no real users.
     const recoveryAccount = await account();

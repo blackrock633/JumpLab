@@ -19,6 +19,27 @@ export async function initialize(db: LocalDB) {
   if (!columns.some(c => c.name === 'created_at')) {
     await db.execAsync("ALTER TABLE records ADD COLUMN created_at TEXT NOT NULL DEFAULT ''; UPDATE records SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now');");
   }
+  const version = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+  if (version?.user_version === 0) await db.withExclusiveTransactionAsync(async tx => {
+    const mixed = await tx.getAllAsync<DiskRow>("SELECT id,owner,kind,payload,revision FROM records WHERE kind='jump' AND id<>lower(id)");
+    for (const row of mixed) {
+      const id = row.id.toLowerCase();
+      const existing = await tx.getFirstAsync<DiskRow>('SELECT id,owner,kind,payload,revision FROM records WHERE id=? AND owner=?', id, row.owner);
+      const queued = await tx.getFirstAsync<{ value: string }>('SELECT value FROM pending WHERE id=? AND owner=?', row.id, row.owner);
+      if (!existing || queued) {
+        await tx.runAsync('UPDATE records SET id=?,payload=? WHERE id=? AND owner=?', id, JSON.stringify({ ...JSON.parse(row.payload), id }), existing ? id : row.id, row.owner);
+      }
+      if (queued) {
+        // Preserve the legacy wire payload for lost-acknowledgment retries.
+        await tx.runAsync('UPDATE OR IGNORE pending SET id=?,value=json_set(value,\'$.id\',?) WHERE id=? AND owner=?', id, id, row.id, row.owner);
+      }
+      await tx.runAsync('DELETE FROM pending WHERE id=? AND owner=?', row.id, row.owner);
+      await tx.runAsync('DELETE FROM records WHERE id=? AND owner=?', row.id, row.owner);
+    }
+    await tx.runAsync(`UPDATE records SET payload=json_set(payload,'$.id',id)
+      WHERE kind='jump' AND lower(json_extract(payload,'$.id'))=id AND json_extract(payload,'$.id')<>id`);
+    await tx.execAsync('PRAGMA user_version=1;');
+  });
 }
 export async function recentJumpRows(db: LocalDB, owner: string) {
   return db.getAllAsync<DiskRow>(`SELECT id,owner,kind,json_remove(payload,'$.timing.timestamps') AS payload,revision
@@ -48,11 +69,18 @@ export async function changeAccount(db: LocalDB, owner: string | null) {
   await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE); VACUUM;');
 }
 export async function putLocal(db: LocalDB, owner: string, kind: WriteKind, payload: unknown, id: string) {
+  if (kind === 'jump') id = id.toLowerCase();
   await putBatch(db, owner, [{ kind, payload, id }]);
   return id;
 }
 // Measurements from one clip and profile/plan updates commit together, including their queue entries.
 export async function putBatch(db: LocalDB, owner: string, values: { kind: WriteKind; payload: unknown; id: string }[]) {
+  values = values.map(value => {
+    if (value.kind !== 'jump') return value;
+    const id = value.id.toLowerCase();
+    const payload = value.payload as { id?: string };
+    return { ...value, id, payload: payload?.id ? { ...payload, id } : payload };
+  });
   if (!values.length || values.length > 180 || new Set(values.map(v => v.id)).size !== values.length) throw Error('Invalid local save batch.');
   await assertOwner(db, owner);
   await db.withExclusiveTransactionAsync(async tx => {
@@ -60,10 +88,42 @@ export async function putBatch(db: LocalDB, owner: string, values: { kind: Write
     for (const { id, kind, payload } of values) {
       const row = await tx.getFirstAsync<DiskRow>('SELECT id,owner,kind,payload,revision FROM records WHERE id=? AND owner=?', id, owner);
       const queued: Pending = { id, owner, kind, revision: row?.revision ?? 0, payload, state: 'pending', attempts: 0 };
-      if (kind === 'jump' && row?.kind === kind && row.payload === JSON.stringify(payload)) continue;
+      if (kind === 'jump' && row?.kind === kind) continue;
       if (row && row.kind !== kind) throw Error('Record kind mismatch.');
       await tx.runAsync('INSERT INTO records(id,owner,kind,payload,revision) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload', id, owner, kind, JSON.stringify(payload), queued.revision);
       await tx.runAsync('INSERT INTO pending(id,owner,value) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value', id, owner, JSON.stringify(queued));
     }
+  });
+}
+
+export type RemoteRow = { id: string; user_id: string; revision: number; data: unknown; created_at: string };
+export async function mergeRemote(db: LocalDB, owner: string, kind: WriteKind, rows: RemoteRow[]) {
+  await db.withExclusiveTransactionAsync(async tx => {
+    await assertOwner(tx, owner);
+    for (const row of rows) {
+      if (row.user_id !== owner) throw Error('Account mismatch.');
+      const id = row.id.toLowerCase();
+      const payload = kind === 'jump' ? { ...(row.data as object), id } : row.data;
+      await tx.runAsync(`INSERT INTO records(id,owner,kind,payload,revision,created_at)
+        SELECT ?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM pending WHERE id=? OR (owner=? AND ?='profile' AND json_extract(value,'$.kind')='profile'))
+        ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,revision=excluded.revision,created_at=excluded.created_at
+        WHERE records.owner=excluded.owner AND records.revision<=excluded.revision`,
+        id, owner, kind, JSON.stringify(payload), row.revision, row.created_at, id, owner, kind);
+    }
+  });
+}
+export async function reconcileWrite(db: LocalDB, sent: Pending, next: Pending | null, revision?: number) {
+  await db.withExclusiveTransactionAsync(async tx => {
+    await assertOwner(tx, sent.owner);
+    const row = await tx.getFirstAsync<{ value: string }>('SELECT value FROM pending WHERE id=? AND owner=?', sent.id, sent.owner);
+    if (!row) return;
+    const current = JSON.parse(row.value) as Pending;
+    const unchanged = JSON.stringify(current) === JSON.stringify(sent);
+    if (revision !== undefined && current.revision === sent.revision) {
+      await tx.runAsync('UPDATE records SET revision=? WHERE id=? AND owner=?', revision, sent.id, sent.owner);
+      if (!unchanged) next = { ...current, revision };
+    } else if (!unchanged) return;
+    if (next) await tx.runAsync('UPDATE pending SET value=? WHERE id=? AND owner=?', JSON.stringify(next), sent.id, sent.owner);
+    else await tx.runAsync('DELETE FROM pending WHERE id=? AND owner=?', sent.id, sent.owner);
   });
 }

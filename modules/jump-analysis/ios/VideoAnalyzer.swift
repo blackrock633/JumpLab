@@ -2,6 +2,83 @@ import Foundation
 import AVFoundation
 import Vision
 import Darwin
+import os
+
+private let measurementLog = OSLog(subsystem: "app.jumplab", category: "Analysis")
+
+// A rate-preserving edit can still skip or repeat capture time.
+func hasAmbiguousEdits(_ mappings: [CMTimeMapping]) -> Bool {
+  guard !mappings.isEmpty else { return true }
+  var previous: CMTimeMapping?
+  for m in mappings {
+    guard m.source.start.isNumeric, m.target.start.isNumeric,
+      m.source.duration.isNumeric, m.target.duration.isNumeric,
+      m.source.duration.seconds > 0, m.target.duration.seconds > 0,
+      CMTimeCompare(m.source.duration, m.target.duration) == 0 else { return true }
+    if let p = previous,
+      CMTimeCompare(CMTimeRangeGetEnd(p.source), m.source.start) != 0 ||
+      CMTimeCompare(CMTimeRangeGetEnd(p.target), m.target.start) != 0 { return true }
+    previous = m
+  }
+  return false
+}
+
+// Compare fixed background patches against the first frame, so gradual drift
+// cannot accumulate undetected. Sample only a bounded number of luma pixels.
+struct CameraEvidence {
+  private var anchors: [(x: Int, y: Int, samples: [Double], energy: Double)] = []
+  private var dimensions: (Int, Int)?
+
+  mutating func check(_ pixel: CVPixelBuffer) throws {
+    let message = "Camera stability could not be established. Use a fixed camera with a textured, stationary background visible in the corners."
+    guard CVPixelBufferGetPlaneCount(pixel) > 0, CVPixelBufferLockBaseAddress(pixel, .readOnly) == kCVReturnSuccess else {
+      throw DetectionFailure.unsuitable(message)
+    }
+    defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
+    guard let plane = CVPixelBufferGetBaseAddressOfPlane(pixel, 0) else { throw DetectionFailure.unsuitable(message) }
+    let width = CVPixelBufferGetWidthOfPlane(pixel, 0), height = CVPixelBufferGetHeightOfPlane(pixel, 0)
+    let stride = CVPixelBufferGetBytesPerRowOfPlane(pixel, 0)
+    guard min(width, height) >= 96, min(width, height) <= 2160, max(width, height) <= 3840,
+      stride >= width, dimensions.map({ $0 == (width, height) }) ?? true else { throw DetectionFailure.unsuitable(message) }
+    dimensions = (width, height)
+    let bytes = plane.assumingMemoryBound(to: UInt8.self)
+    let stepX = max(1, width / 400), stepY = max(1, height / 400)
+    func patch(_ x: Int, _ y: Int) -> [Double] {
+      var values: [Double] = []
+      for row in -3...3 {
+        for col in -3...3 { values.append(Double(bytes[(y + row * 3 * stepY) * stride + x + col * 3 * stepX])) }
+      }
+      let mean = values.reduce(0, +) / Double(values.count)
+      return values.map { $0 - mean }
+    }
+    if anchors.isEmpty {
+      for y in [height / 8, 7 * height / 8] {
+        for x in [width / 8, 7 * width / 8] {
+          let values = patch(x, y)
+          let energy = values.reduce(0) { $0 + $1 * $1 }
+          if energy >= 49 * 144 { anchors.append((x, y, values, energy)) }
+        }
+      }
+      guard anchors.count >= 2 else { throw DetectionFailure.unsuitable(message) }
+      return
+    }
+    for anchor in anchors {
+      func difference(_ x: Int, _ y: Int) -> Double {
+        zip(anchor.samples, patch(x, y)).reduce(0) { $0 + pow($1.0 - $1.1, 2) } / anchor.energy
+      }
+      let fixed = difference(anchor.x, anchor.y)
+      guard fixed < 0.25 else { throw DetectionFailure.unsuitable(message) }
+      if fixed <= 0.04 { continue }
+      for dy in -2...2 {
+        for dx in -2...2 where max(abs(dx), abs(dy)) == 2 {
+          let shifted = difference(anchor.x + dx * stepX, anchor.y + dy * stepY)
+          if shifted + 0.025 < fixed * 0.65 { throw DetectionFailure.unsuitable(message) }
+        }
+      }
+    }
+  }
+}
+
 final class AnalysisCancellation: @unchecked Sendable {
   private let lock = NSLock()
   private var cancelled = false
@@ -31,10 +108,7 @@ final class VideoAnalyzer: @unchecked Sendable {
     }
     let fps = Double(try await track.load(.nominalFrameRate))
     let segments = try await track.load(.segments)
-    let retimed = segments.contains { segment in
-      let m = segment.timeMapping
-      return segment.isEmpty || !m.source.duration.seconds.isFinite || !m.target.duration.seconds.isFinite || abs(m.source.duration.seconds - m.target.duration.seconds) > 0.001
-    }
+    let retimed = segments.contains(where: \.isEmpty) || hasAmbiguousEdits(segments.map(\.timeMapping))
     return ["id": url.deletingPathExtension().lastPathComponent, "bytes": bytes, "duration": duration, "playbackFPS": fps, "hasRetiming": retimed, "encodedWidth": size.width, "encodedHeight": size.height]
   }
   func run(_ url: URL, fps: Double, type: String, deleteAfter: Bool, cancellation: AnalysisCancellation = AnalysisCancellation()) async throws -> [String: Any] {
@@ -56,6 +130,9 @@ final class VideoAnalyzer: @unchecked Sendable {
     let transform = try await track.load(.preferredTransform)
     return try await Task.detached(priority: .userInitiated) {
       try cancellation.check()
+      let span = OSSignpostID(log: measurementLog)
+      os_signpost(.begin, log: measurementLog, name: "Analyze video", signpostID: span)
+      defer { os_signpost(.end, log: measurementLog, name: "Analyze video", signpostID: span) }
       let start = ProcessInfo.processInfo.systemUptime
       let reader = try AVAssetReader(asset: asset)
       let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange])
@@ -66,7 +143,7 @@ final class VideoAnalyzer: @unchecked Sendable {
       defer { reader.cancelReading() }
       let angle = atan2(transform.b, transform.a)
       let orientation: CGImagePropertyOrientation = abs(angle - .pi / 2) < 0.1 ? .right : abs(angle + .pi / 2) < 0.1 ? .left : abs(angle) > 3 ? .down : .up
-      var detector = ContactDetector(type: type), timestamps: [Double] = []
+      var detector = ContactDetector(type: type), timestamps: [Double] = [], camera = CameraEvidence()
       while reader.status == .reading {
         try cancellation.check()
         let more: Bool = try autoreleasepool {
@@ -79,6 +156,7 @@ final class VideoAnalyzer: @unchecked Sendable {
           }
           timestamps.append(pts)
           guard let pixel = CMSampleBufferGetImageBuffer(sample) else { throw DetectionFailure.unsuitable("Video frame could not be decoded.") }
+          try camera.check(pixel)
           let request = VNDetectHumanBodyPoseRequest()
           try VNImageRequestHandler(cvPixelBuffer: pixel, orientation: orientation).perform([request])
           let bodies = request.results ?? []
@@ -103,7 +181,7 @@ final class VideoAnalyzer: @unchecked Sendable {
         throw DetectionFailure.unsuitable("Capture FPS conflicts with decoded timestamps. Import an original recording.")
       }
       var usage = rusage(); getrusage(RUSAGE_SELF, &usage)
-      return ["timestamps": timestamps, "events": try detector.finish(type: type).map(\.dictionary),
+      return ["timestamps": timestamps, "events": try detector.finish().map(\.dictionary), "trailingPartial": detector.trailingPartial, "detectorVersion": 3,
         "elapsedSeconds": ProcessInfo.processInfo.systemUptime - start, "decodedFrames": timestamps.count, "peakResidentBytes": usage.ru_maxrss,
         "memoryMetric": "process lifetime peak RSS, bytes; not incremental analysis allocation",
         "clipBytes": info["bytes"]!, "clipDurationSeconds": info["duration"]!, "playbackFPS": info["playbackFPS"]!,

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, rmSync } from 'node:fs';
-import { initialize, changeAccount, putLocal, putBatch, readPending, recentJumpRows, type LocalDB } from '../src/data/local.ts';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { initialize, changeAccount, putLocal, putBatch, readPending, recentJumpRows, mergeRemote, reconcileWrite, type LocalDB } from '../src/data/local.ts';
 function adapter(file: string) {
   const raw = new DatabaseSync(file);
   const db: LocalDB = {
@@ -14,7 +14,8 @@ function adapter(file: string) {
   }; return { db, close: () => raw.close() };
 }
 test('production SQLite transactions retain workout/result and queue after reopening', async () => {
-  mkdirSync('.cache/tests', { recursive: true }); const file = '.cache/tests/restart.sqlite'; rmSync(file, { force: true });
+  mkdirSync('.cache/tests', { recursive: true });
+  const folder = mkdtempSync('.cache/tests/restart-'), file = folder + '/records.sqlite';
   let connection = adapter(file); await initialize(connection.db); await changeAccount(connection.db, 'A');
   await putLocal(connection.db, 'A', 'workout', { sets: [{ done: true }], completed: false }, 'w');
   await putLocal(connection.db, 'A', 'jump', { heightM: 0.2 }, 'j'); connection.close();
@@ -28,7 +29,7 @@ test('production SQLite transactions retain workout/result and queue after reope
   assert.equal((await connection.db.getAllAsync('SELECT id FROM records')).length, 0);
   assert.equal((await connection.db.getAllAsync('SELECT id FROM pending')).length, 0);
   await assert.rejects(putLocal(connection.db, 'A', 'workout', {}, 'leak'), /Account changed/);
-  await changeAccount(connection.db, null); connection.close();
+  await changeAccount(connection.db, null); connection.close(); rmSync(folder, { recursive: true });
 });
 test('failed queue insertion rolls back saved-work acknowledgement', async () => {
   const { db, close } = adapter(':memory:'); await initialize(db); await changeAccount(db, 'A');
@@ -83,5 +84,55 @@ test('replaying a stable analysis receipt after SQLite commit does not requeue s
   await putBatch(db, 'A', receipt);
   assert.equal((await readPending(db, 'A')).length, 0);
   assert.equal((await db.getAllAsync('SELECT id FROM records')).length, 1);
+  close();
+});
+
+test('native measurement UUID stays unique through save, acknowledge, hydrate and disk restart', async () => {
+  const folder = mkdtempSync('.cache/jump-'), file = folder + '/records.sqlite';
+  const uppercase = 'AABBCCDD-AABB-CCDD-AABB-AABBCCDDEEFF', id = uppercase.toLowerCase();
+  const createdAt = new Date().toISOString();
+  const payload = { id: uppercase, createdAt, heightM: 0.2 };
+  let connection = adapter(file);
+  try {
+    await initialize(connection.db); await changeAccount(connection.db, 'A');
+    await putLocal(connection.db, 'A', 'jump', payload, uppercase);
+    const [sent] = await readPending(connection.db, 'A');
+    assert.equal(sent!.id, id);
+    await reconcileWrite(connection.db, sent!, null, 1);
+    await mergeRemote(connection.db, 'A', 'jump', [{ id, user_id: 'A', data: payload, revision: 1, created_at: createdAt }]);
+    connection.close(); connection = adapter(file); await initialize(connection.db);
+    await putLocal(connection.db, 'A', 'jump', payload, uppercase);
+    assert.deepEqual((await recentJumpRows(connection.db, 'A')).map(row => [row.id, JSON.parse(row.payload).id]), [[id, id]]);
+    assert.deepEqual(await readPending(connection.db, 'A'), []);
+  } finally { connection.close(); rmSync(folder, { recursive: true }); }
+});
+
+test('legacy split identity reconciles pending writes without changing the original wire payload', async () => {
+  const { db, close } = adapter(':memory:'); await initialize(db); await changeAccount(db, 'A');
+  const payload = { id: 'ABC', createdAt: new Date().toISOString() };
+  await db.runAsync("INSERT INTO records(id,owner,kind,payload,revision) VALUES('ABC','A','jump',?,0),('abc','A','jump',?,1)", JSON.stringify(payload), JSON.stringify(payload));
+  await db.runAsync("INSERT INTO pending(id,owner,value) VALUES('ABC','A',?)", JSON.stringify({ id: 'ABC', owner: 'A', kind: 'jump', payload, revision: 0, state: 'pending', attempts: 0 }));
+  await db.execAsync('PRAGMA user_version=0;');
+  await initialize(db);
+  assert.deepEqual((await recentJumpRows(db, 'A')).map(row => [row.id, JSON.parse(row.payload).id, row.revision]), [['abc', 'abc', 1]]);
+  const [pending] = await readPending(db, 'A');
+  assert.equal(pending!.id, 'abc');
+  assert.deepEqual(pending!.payload, payload);
+  close();
+});
+
+test('a slow acknowledgement and an older hydration snapshot preserve newer local workout edits', async () => {
+  const { db, close } = adapter(':memory:'); await initialize(db); await changeAccount(db, 'A');
+  await putLocal(db, 'A', 'workout', { reps: 3 }, 'w');
+  const [sent] = await readPending(db, 'A');
+  await putLocal(db, 'A', 'workout', { reps: 5 }, 'w');
+  await reconcileWrite(db, sent!, null, 1);
+  const [newer] = await readPending(db, 'A');
+  assert.equal(newer!.revision, 1);
+  assert.deepEqual(newer!.payload, { reps: 5 });
+  await reconcileWrite(db, newer!, null, 2);
+  await mergeRemote(db, 'A', 'workout', [{ id: 'w', user_id: 'A', data: { reps: 3 }, revision: 1, created_at: new Date().toISOString() }]);
+  const saved = await db.getFirstAsync("SELECT payload,revision FROM records WHERE id='w'");
+  assert.deepEqual({ ...saved as object }, { payload: '{"reps":5}', revision: 2 });
   close();
 });

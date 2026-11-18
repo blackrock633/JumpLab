@@ -98,9 +98,11 @@ struct ContactDetector {
       if f.time - (lastAir ?? f.time) > 0.10 { throw DetectionFailure.unsuitable("Feet/contact obscured near a transition. Record a clearer view.") }
     }
   }
-  func finish(type: String) throws -> [TransitionEvidence] {
+  var trailingPartial: Bool { firstAir != nil }
+
+  func finish() throws -> [TransitionEvidence] {
     guard ground != nil, !events.isEmpty else { throw DetectionFailure.unsuitable("No complete supported jump. Include quiet stance, takeoff, landing and a short finish.") }
-    guard firstAir == nil else { throw DetectionFailure.unsuitable("Clip ends before a complete landing. Include the full movement.") }
+    guard type == "repeated" || !trailingPartial else { throw DetectionFailure.unsuitable("Clip ends before a complete landing. Include the full movement.") }
     guard type == "repeated" || events.count == 1 else { throw DetectionFailure.unsuitable("Multiple jumps found. Select repeated jumps or import one jump.") }
     guard events.allSatisfy({ $0.takeoff[1] - $0.takeoff[0] <= 0.10 && $0.landing[1] - $0.landing[0] <= 0.10 }) else {
       throw DetectionFailure.unsuitable("Transition timing is too uncertain. Use a higher-frame-rate original clip.")

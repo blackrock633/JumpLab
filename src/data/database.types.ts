@@ -11,7 +11,9 @@ export type Database = {
       prescriptions: ReadTable<{ id: string; user_id: string; plan_id: string; data: Json }>;
       adaptations: ReadTable<{ id: string; user_id: string; plan_id: string; data: Json; created_at: string }>;
     };
-    Views: Record<string, never>;
+    Views: {
+      jump_history: { Row: { id: string | null; user_id: string | null; revision: number | null; data: Json | null; created_at: string | null }; Relationships: [] };
+    };
     Functions: {
       save_record: { Args: { kind: string; record_id: string; expected_revision: number; payload: Json }; Returns: Json };
       delete_account: { Args: Record<string, never>; Returns: undefined };

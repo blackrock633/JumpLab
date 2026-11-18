@@ -7,6 +7,39 @@ import AVFoundation
     catch { print("PASS media rejection: \(label)") }
   }
   static func main() async throws {
+    func mapping(source: Int64, target: Int64, length: Int64, targetLength: Int64? = nil) -> CMTimeMapping {
+      func time(_ value: Int64) -> CMTime { CMTime(value: value, timescale: 600) }
+      return CMTimeMapping(source: CMTimeRange(start: time(source), duration: time(length)),
+        target: CMTimeRange(start: time(target), duration: time(targetLength ?? length)))
+    }
+    let first = mapping(source: 120, target: 60, length: 600)
+    precondition(!hasAmbiguousEdits([first, mapping(source: 720, target: 660, length: 600)]))
+    precondition(hasAmbiguousEdits([first, mapping(source: 840, target: 660, length: 600)]))
+    precondition(hasAmbiguousEdits([first, mapping(source: 720, target: 720, length: 600)]))
+    precondition(hasAmbiguousEdits([mapping(source: 120, target: 60, length: 600, targetLength: 1200)]))
+    print("PASS continuous nonzero origin, same-rate source cut, target gap and retiming")
+
+    func background(shift: Int = 0, flat: Bool = false) -> CVPixelBuffer {
+      var buffer: CVPixelBuffer?
+      precondition(CVPixelBufferCreate(kCFAllocatorDefault, 320, 240, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, nil, &buffer) == kCVReturnSuccess)
+      let pixel = buffer!
+      precondition(CVPixelBufferLockBaseAddress(pixel, []) == kCVReturnSuccess)
+      let base = CVPixelBufferGetBaseAddressOfPlane(pixel, 0)!.assumingMemoryBound(to: UInt8.self)
+      let stride = CVPixelBufferGetBytesPerRowOfPlane(pixel, 0)
+      for y in 0..<240 {
+        for x in 0..<320 {
+          let source = y - shift
+          base[y * stride + x] = flat ? 100 : UInt8(truncatingIfNeeded: x * 19 + source * 39 + (x * source) % 57)
+        }
+      }
+      CVPixelBufferUnlockBaseAddress(pixel, [])
+      return pixel
+    }
+    var camera = CameraEvidence()
+    try camera.check(background()); try camera.check(background())
+    await reject("vertical camera displacement") { try camera.check(background(shift: 8)) }
+    var blank = CameraEvidence()
+    await reject("camera evidence unavailable on flat background") { try blank.check(background(flat: true)) }
     let cancellation = AnalysisCancellation()
     try cancellation.check()
     cancellation.cancel()

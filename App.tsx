@@ -7,19 +7,22 @@ import { Appearance, Button, Choices, Copy, Field, styles, useTheme } from './sr
 import { ProfileForm } from './src/screens/ProfileForm';
 import { Analyze } from './src/screens/Analyze';
 import { Workout, type WorkoutRecord, type SavedSession } from './src/screens/Workout';
-import { AUTH_REDIRECT, configured, eraseDeletedSession, supabase } from './src/data/auth';
+import { AUTH_REDIRECT, configured, eraseDeletedSession, offlineSessionOwner, supabase } from './src/data/auth';
 import * as store from './src/data/store';
-import { adapt, completedPrescription, futureProfile, generate, localDate, type Plan, type Profile } from './src/core/training';
-import { compatible, displayHeight, LEGACY_METHOD, METHOD, type JumpResult, type JumpType } from './src/core/measurement';
+import { adapt, canOpenWorkout, completedPrescription, futureProfile, generate, localDate, type Plan, type Profile } from './src/core/training';
+import { compatible, displayHeight, LEGACY_METHOD, METHOD, PREVIOUS_METHOD, type JumpResult, type JumpType } from './src/core/measurement';
 import { recoveryCode } from './src/core/auth-link';
 
 type SavedPlan = Omit<Plan, 'sessions'> & { sessions: SavedSession[]; changeReason?: string; programId?: string };
 type Tab = 'Today' | 'Analyze' | 'Progress' | 'Settings';
+const methods = { '0.3': METHOD, '0.2': PREVIOUS_METHOD, '0.1': LEGACY_METHOD } as const;
+type MethodVersion = keyof typeof methods;
 function saveable(plan: Plan, reason: string, programId = randomUUID()): SavedPlan { return { ...plan, programId, changeReason: reason, sessions: plan.sessions.map(s => ({ ...s, prescriptionId: randomUUID(), workoutId: randomUUID() })) }; }
 function Application() {
   const theme = useTheme();
   const [session, setSession] = useState<AuthSession | null>(null), [loaded, setLoaded] = useState(false), [ready, setReady] = useState(false);
   const [deletion, setDeletion] = useState<store.Deletion | null>(null);
+  const [blockedOwner, setBlockedOwner] = useState<string | null>(null);
   const [profileUnknown, setProfileUnknown] = useState(false);
   const [readyOwner, setReadyOwner] = useState<string | null>();
   const [offlineOwner, setOfflineOwner] = useState<string | null>(null);
@@ -28,7 +31,7 @@ function Application() {
   const [profiles, setProfiles] = useState<store.LocalRecord<Profile>[]>([]), [plans, setPlans] = useState<store.LocalRecord<SavedPlan>[]>([]);
   const [jumps, setJumps] = useState<store.LocalRecord<JumpResult>[]>([]), [workouts, setWorkouts] = useState<store.LocalRecord<WorkoutRecord>[]>([]), [queue, setQueue] = useState<store.PendingStatus[]>([]);
   const [selectedSession, setSelectedSession] = useState<SavedSession | null>(null), [editProfile, setEditProfile] = useState(false), [progressType, setProgressType] = useState<JumpType>('standing');
-  const [progressMethod, setProgressMethod] = useState('Current'), [chartLimit, setChartLimit] = useState(30);
+  const [progressMethod, setProgressMethod] = useState<MethodVersion>('0.3'), [chartLimit, setChartLimit] = useState(30);
   const owner = session?.user.id ?? offlineOwner ?? undefined;
   const currentOwner = useRef(owner); currentOwner.current = owner;
   const profile = profiles[0]?.payload, plan = plans[0]?.payload;
@@ -42,13 +45,24 @@ function Application() {
   async function restoreSession() {
     const pendingDeletion = await store.deletionStatus();
     const { data, error } = await supabase.auth.getSession();
-    const cached = error?.name === 'AuthRetryableFetchError' ? await store.cachedAccount() : null;
+    const offline = !data.session && error?.name === 'AuthRetryableFetchError' ? await offlineSessionOwner() : null;
+    const cached = offline && offline === await store.cachedAccount() ? offline : null;
     setDeletion(pendingDeletion); setSession(data.session); setOfflineOwner(cached); setLoaded(true);
-    if (error) setMessage('Session could not refresh. Cached work is available offline; reconnect to sync.');
+    if (error) setMessage(cached
+      ? 'Session could not refresh. Cached work is available offline; reconnect to sync.'
+      : 'Session could not refresh. Reconnect and sign in to open your saved work.');
   }
-  async function openAccount(account: string | null, active = () => true) {
-    await store.switchAccount(account);
-    if (!active() || !account) return;
+  async function openAccount(account: string | null, active = () => true, discard = false) {
+    if (!account) return; // Authentication loss locks the UI. Only confirmed erasure clears disk.
+    try {
+      if (discard) await store.switchAccount(account, true);
+      else await store.switchAccount(account);
+    } catch (error) {
+      if (error instanceof store.UnsyncedAccount && active()) { setBlockedOwner(account); return; }
+      throw error;
+    }
+    if (!active()) return;
+    setBlockedOwner(null);
     try { await store.recoverAnalysis(account); }
     catch (error) { if (active()) setMessage(error instanceof Error ? error.message : 'Previous analysis could not be recovered.'); }
     const cachedProfiles = await store.records<Profile>(account, 'profile');
@@ -73,6 +87,7 @@ function Application() {
   }, []);
   useEffect(() => {
     if (!loaded || deletion) return;
+    setBlockedOwner(null);
     let active = true; setReady(false); setSelectedSession(null); setProfiles([]); setPlans([]); setJumps([]); setWorkouts([]); setQueue([]);
     void openAccount(owner ?? null, () => active).then(() => { if (active) { setReadyOwner(owner ?? null); setReady(true); } }).catch(() => setMessage('Private storage could not open. Restart and retry; work has not been reported as saved.'));
     return () => { active = false; };
@@ -92,6 +107,11 @@ function Application() {
       } finally { await read(owner); }
     });
   }
+  async function signOutWithoutErasing() {
+    const { error } = await supabase.auth.signOut({ scope: 'local' });
+    if (error) throw Error('Sign out failed. Reconnect and try again.');
+    setOfflineOwner(null); setSession(null);
+  }
   async function saveProfile(p: Profile) {
     if (!owner) return;
     p = futureProfile(p, workouts.filter(w => w.payload.completed).map(w => w.payload.completedAt));
@@ -102,21 +122,18 @@ function Application() {
   }
   function logout() {
     if (!owner) return;
-    void action(async () => {
-      const unsynced = await store.pending(owner);
-      if (currentOwner.current !== owner) return;
-      Alert.alert('Sign out?', unsynced.length ? 'Unsynced work will be erased from this iPhone. Cancel to sync first.' : 'Private cached data will be erased from this iPhone.', [
-        { text: 'Cancel', style: 'cancel' }, { text: 'Sign out and erase local data', style: 'destructive', onPress: () => void action(async () => {
-          if (currentOwner.current !== owner) return;
-          const { error } = await supabase.auth.signOut({ scope: 'local' }); if (error) throw Error('Sign out failed. Reconnect and try again.');
-          await store.switchAccount(null); setSession(null);
-        }) },
-      ]);
-    });
+    Alert.alert('Sign out?', 'Cached data and any unsynced work will be erased from this iPhone. Cancel to sync first.', [
+      { text: 'Cancel', style: 'cancel' }, { text: 'Sign out and erase local data', style: 'destructive', onPress: () => void action(async () => {
+        if (currentOwner.current !== owner) return;
+        const { error } = await supabase.auth.signOut({ scope: 'local' });
+        if (error) throw Error('Sign out failed. Reconnect and try again.');
+        await store.eraseLocalAccount(owner);
+      }) },
+    ]);
   }
   async function eraseAfterDeletion(pending: store.Deletion) {
     if (session && session.user.id !== pending.owner) throw Error('Sign out of the other account to resume deletion.');
-    await store.switchAccount(null);
+    await store.eraseLocalAccount(pending.owner);
     await eraseDeletedSession(session, pending.owner);
     await store.clearDeletion(pending.owner);
     setOfflineOwner(null); setSession(null); setDeletion(null);
@@ -145,7 +162,9 @@ function Application() {
   const completionDates = workouts.filter(w => w.payload.completed).map(w => w.payload.completedAt);
   const startWithoutCatchup = profile ? futureProfile({ ...profile, startDate: localDate() }, completionDates).startDate : localDate();
   const byWorkout = new Map(plans.flatMap(p => p.payload.sessions.map(s => [s.workoutId, s] as const)));
-  const recent = tab === 'Progress' ? compatible(jumps.map(j => j.payload), progressType, progressMethod === 'Current' ? METHOD : LEGACY_METHOD).reverse() : [];
+  const earlier = tab === 'Progress' ? (['0.2', '0.1'] as const).filter(version => jumps.some(j => j.payload.method === methods[version])) : [];
+  const visibleMethod = progressMethod !== '0.3' && earlier.includes(progressMethod) ? progressMethod : '0.3';
+  const recent = tab === 'Progress' ? compatible(jumps.map(j => j.payload), progressType, methods[visibleMethod]).reverse() : [];
   return <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }}><StatusBar barStyle={theme.bg === '#101D1A' ? 'light-content' : 'dark-content'} />
     <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 20, paddingBottom: 40 }}>
       <Copy heading>JumpLab</Copy>
@@ -161,11 +180,23 @@ function Application() {
             }
             setPassword('');
           })} /></View> : null}
-        <Button title="Retry account deletion" disabled={busy} onPress={() => void action(() => finishDeletion(deletion))} />
+        {session && session.user.id !== deletion.owner
+          ? <Button title="Sign out of this account" disabled={busy} onPress={() => void action(signOutWithoutErasing)} />
+          : <Button title="Retry account deletion" disabled={busy} onPress={() => void action(() => finishDeletion(deletion))} />}
         {!session && !deletion.confirmed ? <Button title="Erase private data on this iPhone" disabled={busy} onPress={() => Alert.alert(
           'Erase private data on this iPhone?', 'Cloud deletion remains unconfirmed. Unsynced local data will be erased.',
           [{ text: 'Cancel', style: 'cancel' }, { text: 'Erase local data', style: 'destructive', onPress: () => void action(() => eraseAfterDeletion(deletion)) }],
         )} /> : null}
+      </View> : owner && blockedOwner === owner ? <View>
+        <Copy>Another account has unsynced work on this iPhone. Sign back in to that account to recover it, or erase it before continuing.</Copy>
+        <Button title="Sign out to recover saved work" disabled={busy} onPress={() => void action(signOutWithoutErasing)} />
+        <Button title="Erase previous account’s local work" disabled={busy} onPress={() => Alert.alert(
+          'Erase unsynced work?', 'The previous account’s unsynced work will be permanently deleted from this iPhone.',
+          [{ text: 'Cancel', style: 'cancel' }, { text: 'Erase local work', style: 'destructive', onPress: () => void action(async () => {
+            if (currentOwner.current !== owner) return;
+            await openAccount(owner, () => currentOwner.current === owner, true);
+          }) }],
+        )} />
       </View> : !loaded || !ready || readyOwner !== (owner ?? null) ? <View><Copy>Opening your saved work…</Copy><Button title="Retry" disabled={busy} onPress={() => void action(async () => { if (!loaded) { await restoreSession(); return; } await openAccount(owner ?? null); setReadyOwner(owner ?? null); setReady(true); })} /></View> : !owner ? <View>
         <Copy heading>Build your next jump</Copy><Copy>Individual training and experimental on-device jump estimates. Videos stay on your iPhone.</Copy>
         {!configured ? <Copy>Account service is not configured in this build. Setup is required before signing in.</Copy> : null}
@@ -192,7 +223,10 @@ function Application() {
             }} />
         </View> : <View><Copy heading>Your week</Copy>
           {profile.pain || paused ? <Copy>Training paused. Stop or modify for pain or unusual fatigue. Review your profile and seek qualified guidance when needed.</Copy> : plan ? <View><Copy>Week {plan.week} · {plan.explanation}</Copy>
-            {plan.sessions.map(s => <Button key={s.id} title={`${s.scheduledOn} ${s.startHour}:00 · ${s.minutes} min${workouts.find(w => w.id === s.workoutId)?.payload.completed ? ' · completed' : ''}`} disabled={!workouts.find(w => w.id === s.workoutId)?.payload.completed && (s.scheduledOn !== localDate() || s.scheduledOn < startWithoutCatchup)} onPress={() => setSelectedSession(s)} />)}
+            {plan.sessions.map(s => {
+              const done = Boolean(workouts.find(w => w.id === s.workoutId)?.payload.completed);
+              return <Button key={s.id} title={`${s.scheduledOn} ${s.startHour}:00 · ${s.minutes} min${done ? ' · completed' : ''}`} disabled={!canOpenWorkout(s, done)} onPress={() => setSelectedSession(s)} />;
+            })}
             <Button title="Prepare next week" onPress={() => void action(async () => {
               if (plan.sessions.some(s => s.scheduledOn > localDate())) throw Error('Keep this week’s schedule. Prepare the next week after its final scheduled day. Missed work will not be moved.');
               const currentIds = plan.sessions.map(s => s.workoutId);
@@ -216,12 +250,12 @@ function Application() {
         </View> : null}
         {tab === 'Progress' ? <View><Copy heading>Your progress</Copy>
           <Choices label="Compare jump type" values={['standing', 'running', 'repeated']} value={progressType} onChange={type => { setProgressType(type); setChartLimit(30); }} />
-          {jumps.some(j => j.payload.method === LEGACY_METHOD) ? <Choices label="Measurement version" values={['Current', 'Earlier']} value={progressMethod} onChange={method => { setProgressMethod(method); setChartLimit(30); }} /> : null}
+          {earlier.length ? <Choices label="Measurement version" values={['0.3', ...earlier]} value={visibleMethod} onChange={method => { setProgressMethod(method); setChartLimit(30); }} /> : null}
           <Copy>Last 90 days on this iPhone · estimated height in cm · same jump type and flight-time method only. Experimental results are excluded from training progression.</Copy>
           {!recent.length ? <Copy>No compatible results in this date range. Analyze a jump to begin.</Copy> : recent.slice(0, chartLimit).map(r => <View key={r.id} accessible accessibilityLabel={`${new Date(r.createdAt).toLocaleDateString()}: estimated height ${displayHeight(r)}`}>
             <Copy>{new Date(r.createdAt).toLocaleDateString()} · {displayHeight(r)}</Copy>
             <View style={{ height: 12, maxWidth: '100%', width: `${Math.min(100, r.heightM / 1.5 * 100)}%`, backgroundColor: theme.accent }} />
-            <Copy muted>Capture {r.timing.originalFPS} FPS · experimental · flight-time {r.method === METHOD ? "0.2" : "0.1"}</Copy>
+            <Copy muted>Capture {r.timing.originalFPS} FPS · playback {r.timing.playbackFPS} FPS · experimental · flight-time {visibleMethod}</Copy>
           </View>)}
           {chartLimit < recent.length ? <Button title="Show more estimates" onPress={() => setChartLimit(chartLimit + 30)} /> : null}
           <Copy heading>Workout history</Copy>
@@ -229,8 +263,8 @@ function Application() {
             const s = byWorkout.get(w.id);
             return <Button key={w.id} title={`${w.payload.completed ? 'Completed' : 'In progress'} · ${new Date(w.payload.updatedAt).toLocaleDateString()} · ${w.payload.sets.filter(s => s.done).length} sets done`} onPress={() => void action(async () => {
               const prescription = s ?? await store.prescription<SavedSession>(owner, w.payload.prescriptionId);
-              if (!w.payload.completed && (prescription.scheduledOn !== localDate() || prescription.scheduledOn < startWithoutCatchup)) {
-                throw Error('This session is outside its scheduled day or recovery window. Resume with the next eligible workout.');
+              if (!canOpenWorkout(prescription, w.payload.completed)) {
+                throw Error('This session is outside its scheduled day. Resume with the next eligible workout.');
               }
               if (currentOwner.current === owner) { setSelectedSession(prescription); setTab('Today'); }
             })} />;

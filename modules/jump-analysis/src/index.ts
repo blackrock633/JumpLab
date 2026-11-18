@@ -6,7 +6,7 @@ export type AnalysisReceipt = { id: string; analysis: NativeAnalysis; type: Jump
 export default requireNativeModule<{
   pick(): Promise<ImportedClip | null>;
   analyze(id: string, originalFPS: number, type: string, confirmedOriginal: boolean, owner: string): Promise<AnalysisReceipt>;
-  setAccount(owner: string | null): Promise<void>;
+  setAccount(owner: string | null, preserve: string | null): Promise<boolean>;
   recoverAnalysis(owner: string): Promise<AnalysisReceipt | null>;
   finishAnalysis(owner: string, id: string): Promise<void>;
   cancel(): void;

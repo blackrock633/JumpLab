@@ -36,6 +36,15 @@ export const supabase = createClient<Database>(url || 'https://unconfigured.inva
 });
 export const AUTH_REDIRECT = 'jumplab://auth/callback';
 
+export async function offlineSessionOwner(): Promise<string | null> {
+  // A still-stored session can identify its owner when a network refresh fails.
+  // The SQLite cache alone does not prove which account is currently signed in.
+  const stored = await storage.getItem(storageKey);
+  if (!stored) return null;
+  const session = JSON.parse(stored) as Partial<Session>;
+  return typeof session?.access_token === 'string' && typeof session.user?.id === 'string' ? session.user.id : null;
+}
+
 let authEpoch = 0;
 let authenticatedOwner: string | undefined;
 supabase.auth.onAuthStateChange((_event, session) => {

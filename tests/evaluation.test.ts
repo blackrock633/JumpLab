@@ -5,6 +5,14 @@ test('fixtures validate reference identity/uncertainty and complete events', () 
   validateFixtures({ version: 1, clips: [] });
   assert.throws(() => validateFixtures({ clips: [] }));
   assert.throws(() => validateFixtures({ version: 1, clips: [{ id: 'missing-evidence' }] }));
+  const clip = { id: 'clip', file: 'clip.mov', sha256: 'a'.repeat(64), jumpType: 'standing',
+    category: 'failure', originalFPS: 60, reference: { method: 'frame annotation', annotator: 'reviewer', uncertaintySeconds: 0.02 },
+    expected: { outcome: 'reject', reason: 'occlusion', events: [] } };
+  validateFixtures({ version: 1, clips: [clip] });
+  for (const invalid of [{ id: 123 }, { reference: { ...clip.reference, method: 42 } }, { reference: { ...clip.reference, annotator: true } },
+    { sha256: ['a'.repeat(64)] }, { expected: { ...clip.expected, reason: true } }, { expected: { outcome: 'accept', events: [null] } }]) {
+    assert.throws(() => validateFixtures({ version: 1, clips: [{ ...clip, ...invalid }] }), /Invalid/);
+  }
 });
 test('matching is one-to-one; missed/false events and signed errors are reported', () => {
   const result = matchEvents([{ takeoffSeconds: 1.02, landingSeconds: 1.43 }, { takeoffSeconds: 1.03, landingSeconds: 1.44 }], [{ takeoffSeconds: 1, landingSeconds: 1.4 }, { takeoffSeconds: 3, landingSeconds: 3.4 }]);

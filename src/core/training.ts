@@ -1,4 +1,4 @@
-export const RULES = 'conservative/1';
+export const RULES = 'conservative/2';
 export type Profile = {
   goal: 'standing' | 'running' | 'repeated'; experience: 'new' | 'trained';
   days: number[]; practiceDays: number[]; startHour: number; weeklyMinutes: number; sessionMinutes: number;
@@ -8,7 +8,7 @@ export type Profile = {
 };
 export type Exercise = { id: string; name: string; instructions: string; sets: number; baseSets: number; reps: number; loadKg: number | null; effort: string; restSeconds: number };
 export type Session = { id: string; day: number; scheduledOn: string; startHour: number; minutes: number; exercises: Exercise[] };
-export type Plan = { version: typeof RULES; week: number; sessions: Session[]; explanation: string; usedObservationIds?: string[] };
+export type Plan = { version: typeof RULES | 'conservative/1'; week: number; sessions: Session[]; explanation: string; usedObservationIds?: string[] };
 export function kg(value: number, unit: 'kg' | 'lb') { return unit === 'lb' ? value * 0.45359237 : value; }
 export function validateProfile(p: Profile) {
   if (!validDate(p.startDate) || !['standing', 'running', 'repeated'].includes(p.goal) || !['new', 'trained'].includes(p.experience) ||
@@ -72,24 +72,32 @@ export function generate(p: Profile, week = 1): Plan {
     exercises: [strength, ...(p.limitation === 'no-impact' ? [] : [jump]), calf].map(e => ({ ...e })) })).sort((a, b) => a.scheduledOn.localeCompare(b.scheduledOn)),
     explanation: `${deload ? 'Deload: fewer sets. ' : ''}Includes 5-minute easy warmup and 3-minute cooldown. At least one rest day between hard sessions. ${p.limitation === 'no-impact' ? 'Impact work omitted.' : ''}` };
 }
-export type Feedback = { id?: string; completed: boolean; effort: number; recovery: 'good' | 'fatigued'; pain: boolean };
+export type Feedback = { id?: string; completed: boolean; effort: number | null; recovery: 'good' | 'fatigued' | null; pain: boolean };
 export type Change = { version: typeof RULES; reason: string; plan: Plan };
-export function adapt(plan: Plan, observations: Feedback[], reliableTrends: { typeCompatible: boolean; validated: boolean; count: number; changeFraction: number } | null): Change {
-  if (observations.some(o => !Number.isFinite(o.effort) || o.effort < 1 || o.effort > 10 || !['good', 'fatigued'].includes(o.recovery))) throw Error('Check effort and recovery feedback.');
+export function adapt(plan: Plan, observations: Feedback[], reliableTrends: { typeCompatible: boolean; validated: boolean; count: number; changeFraction: number } | null, schedule?: { notBefore: string; deloadIds: string[] }): Change {
+  if (observations.some(o => (o.effort !== null && (!Number.isInteger(o.effort) || o.effort < 1 || o.effort > 10)) ||
+    (o.recovery !== null && !['good', 'fatigued'].includes(o.recovery)))) throw Error('Check effort and recovery feedback.');
+  if (schedule && !validDate(schedule.notBefore)) throw Error('Invalid next-week start date.');
   const fresh = observations.filter((o, i, all) => !o.id || (!plan.usedObservationIds?.includes(o.id) && all.findIndex(x => x.id === o.id) === i));
+  const comfortable = (o: Feedback) => o.completed && o.effort !== null && o.effort <= 6 && o.recovery === 'good';
+  const deloadFeedback = fresh.filter(o => o.id && schedule?.deloadIds.includes(o.id));
+  const restoreVolume = plan.week % 4 === 0 && deloadFeedback.length > 0 && deloadFeedback.every(comfortable);
   let factor = 1, reason = 'Hold: insufficient evidence; missing sessions are not failures.';
   if (observations.some(o => o.pain || o.recovery === 'fatigued')) { factor = 0; reason = 'Stop/modify: pain or unusual fatigue. No automatic escalation; review before resuming.'; }
   else if (plan.week % 4 === 3) { factor = 0.5; reason = 'Planned deload: reduce future sets; no catch-up sessions.'; }
-  else if (plan.week % 4 === 0 && observations.length && observations.at(-1)!.effort <= 6) { reason = 'Return to baseline volume after deload; hold loads.'; }
-  else if (fresh.length >= 3 && fresh.slice(-3).every(o => o.completed && o.effort <= 6 && o.recovery === 'good')) {
+  else if (restoreVolume) { reason = 'Return to baseline volume after deload; hold loads.'; }
+  else if (plan.week % 4 !== 0 && fresh.length >= 3 && fresh.slice(-3).every(comfortable)) {
     // Experimental measurements are deliberately excluded. Trends can hold/reduce, never accelerate progression.
     if (reliableTrends?.validated && reliableTrends.typeCompatible && reliableTrends.count >= 3 && reliableTrends.changeFraction < -0.05) {
       factor = 0.8; reason = 'Reduce future volume: repeated compatible validated decline.';
     } else { factor = 1.025; reason = 'Three comfortable completed sessions: at most 2.5% load increase; no added contacts.'; }
-  } else if (observations.length && observations.slice(-2).filter(o => o.effort >= 9).length >= 2) { factor = 0.8; reason = 'Reduce future volume after two high-effort sessions.'; }
-  const next: Plan = { ...plan, usedObservationIds: factor !== 1 ? [...new Set([...(plan.usedObservationIds ?? []), ...fresh.flatMap(o => o.id ? [o.id] : [])])].slice(-1000) : plan.usedObservationIds,
-    week: plan.week + 1, sessions: plan.sessions.map(s => ({ ...s, id: `w${plan.week + 1}-d${s.day}`, scheduledOn: new Date(Date.parse(s.scheduledOn) + 7 * 86400000).toISOString().slice(0, 10), exercises: s.exercises.map(e => ({ ...e,
-    sets: factor === 0 ? 0 : factor < 1 ? Math.max(1, Math.floor(e.sets * factor)) : reason.startsWith('Return to baseline') ? e.baseSets : e.sets,
+  } else if (observations.length && observations.slice(-2).filter(o => o.effort !== null && o.effort >= 9).length >= 2) { factor = 0.8; reason = 'Reduce future volume after two high-effort sessions.'; }
+  const oneWeek = 7 * 86400000;
+  const earliest = Math.min(...plan.sessions.map(s => Date.parse(s.scheduledOn)));
+  const weeksToMove = Math.max(1, schedule ? Math.ceil((Date.parse(schedule.notBefore) - earliest) / oneWeek) : 1);
+  const next: Plan = { ...plan, version: RULES, usedObservationIds: factor !== 1 || restoreVolume ? [...new Set([...(plan.usedObservationIds ?? []), ...fresh.flatMap(o => o.id ? [o.id] : [])])].slice(-1000) : plan.usedObservationIds,
+    week: plan.week + 1, sessions: plan.sessions.map(s => ({ ...s, id: `w${plan.week + 1}-d${s.day}`, scheduledOn: new Date(Date.parse(s.scheduledOn) + weeksToMove * oneWeek).toISOString().slice(0, 10), exercises: s.exercises.map(e => ({ ...e,
+    sets: factor === 0 ? 0 : factor < 1 ? e.sets === 0 ? 0 : Math.max(1, Math.floor(e.sets * factor)) : restoreVolume ? e.baseSets : e.sets,
     reps: factor > 1 && e.loadKg === null && e.id !== 'jump' ? Math.min(e.reps + 1, 8) : e.reps,
     loadKg: e.loadKg !== null && factor > 1 ? Math.floor(e.loadKg * factor * 100) / 100 : e.loadKg,
   })) })), explanation: reason };
@@ -102,7 +110,7 @@ export function validateLog(session: Session, logs: SetLog[]) {
     const e = session.exercises.find(e => e.id === l.exerciseId), key = `${l.exerciseId}/${l.index}`;
     if (!e || !Number.isInteger(l.index) || l.index < 0 || l.index >= e.sets || seen.has(key) ||
       !Number.isInteger(l.reps) || l.reps < 0 || l.reps > 100 || typeof l.done !== 'boolean' ||
-      (l.loadKg !== null && (!Number.isFinite(l.loadKg) || l.loadKg < 0 || l.loadKg > 500))) throw Error('Only valid prescribed sets can be logged.');
+      (l.loadKg !== null && (!Number.isFinite(l.loadKg) || l.loadKg < 0 || l.loadKg > 500 || e.id !== 'squat' || e.name === 'Chair squat'))) throw Error('Only valid prescribed sets can be logged.');
     seen.add(key);
   }
 }

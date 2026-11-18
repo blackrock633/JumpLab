@@ -2,7 +2,7 @@
 
 An iOS React Native/TypeScript app for individual jump training and **experimental, unvalidated** flight-time estimates. AVFoundation decodes imported video and Apple Vision estimates poses locally. Videos and frames have no upload path. The app uses deterministic training rules and Supabase Auth/Postgres for metadata.
 
-This is an implementation handoff, **not an approved release**. No representative athlete clips, disposable backend, signing identity, or physical iPhone were available. The iOS build is blocked at native dependency installation. See [implementation evidence](docs/IMPLEMENTATION.md), [measurement limits](docs/MEASUREMENT.md), [training rules](docs/TRAINING.md), [backend setup](docs/BACKEND.md), and [privacy](docs/PRIVACY.md).
+This is an implementation handoff, **not an approved release**. No representative athlete clips, disposable backend, signing identity, or physical iPhone were available. The iOS build is blocked at native dependency installation. See [initial implementation notes](docs/IMPLEMENTATION.md), [measurement limits](docs/MEASUREMENT.md), [training rules](docs/TRAINING.md), [backend setup](docs/BACKEND.md), and [privacy](docs/PRIVACY.md).
 
 ## Toolchain and dependencies
 
@@ -22,7 +22,7 @@ npm run start
 npm run ios
 ```
 
-Observed clean-install limitation: this checkout's cached lockfile lacks optional platform-package records. `npm ci --offline --cache .cache/npm --no-audit --no-fund` fails validation; no clean installation is claimed. With registry access, regenerate the lock using `npm install --package-lock-only` in a clean dependency directory, inspect the diff, then run `npm ci`. Keep the regenerated lock in source control. Do not fill missing package hashes with guessed values. Native setup also needs access to CocoaPods/GitHub/npm artifacts. `pod install` failed resolving github.com and finding CMake, so **no Podfile.lock or simulator binary was produced**; retain the real Podfile.lock after the first successful installation.
+On Apple silicon, a clean `npm ci --offline --cache ../npm --no-audit` in an empty dependency directory installed 1,019 packages using the workspace npm cache and the revised lock. The added optional package entries pin versions declared by their parent packages. Registry access is required to recover the upstream integrity metadata for the other platforms. npm 12 blocked two optional native install scripts; packaged Apple-silicon binaries were installed and the checks ran. Native setup requires CocoaPods artifact access and GitHub plus CMake if React Native falls back to a Hermes source build. The current checkout has no completed pod install, `ios/Podfile.lock`, or simulator app. Regenerate the CocoaPods lock during a successful install and retain it with the project. CoreSimulator was inaccessible in this environment.
 
 `npm run build:ios:simulator` runs CocoaPods and builds the Debug simulator workspace into `.cache/DerivedData`, with signing disabled. It exits on the first failure. It never deploys. To launch and run XCTest smoke coverage, boot a simulator, start Metro, set `JUMPLAB_SIMULATOR_UDID` to its actual UDID and run:
 
@@ -30,7 +30,7 @@ Observed clean-install limitation: this checkout's cached lockfile lacks optiona
 sh scripts/smoke-ios.sh
 ```
 
-This installs locally to that simulator and runs the cold-launch/large-text dark-mode tests. UI screenshots go into `.cache/LaunchSmoke.xcresult`. Repeated runs should use a fresh result-bundle path or remove that generated bundle first. This smoke test was not run successfully here because no app binary exists.
+This installs locally to that simulator and runs the cold-launch and large-text dark-mode tests. For the optional system-picker cancellation test, build against the disposable local backend and set the Xcode test-runner environment variables `TEST_RUNNER_JUMPLAB_UI_TEST_EMAIL` and `TEST_RUNNER_JUMPLAB_UI_TEST_PASSWORD` to a confirmed disposable test account. The picker test explicitly skips if those values are absent. UI screenshots go into `.cache/LaunchSmoke.xcresult`. Repeated runs should use a fresh result-bundle path or remove that generated bundle first. This smoke test was not run successfully here because no app binary exists.
 
 ## Checks
 

@@ -83,3 +83,26 @@ test('progression requires actual prescribed reps, sets and applicable loads', (
     assert.equal(completedPrescription(session, logs.map((s, i) => i === 0 ? { ...s, ...edit } : s)), false);
   }
 });
+
+test('overdue programs resume on spaced schedule after actual completion', () => {
+  const plan = generate({ ...profile, startDate: '2026-10-05' });
+  const next = adapt(plan, [], null, { notBefore: '2026-11-20', deloadIds: [] }).plan;
+  assert.deepEqual(next.sessions.map(s => s.scheduledOn), ['2026-11-23', '2026-11-25']);
+  assert.deepEqual(next.sessions.map(s => s.day), plan.sessions.map(s => s.day));
+});
+
+test('deload volume restoration requires fresh, complete and explicitly comfortable work', () => {
+  const plan = generate(profile, 4);
+  const schedule = { notBefore: '2026-12-07', deloadIds: ['deload'] };
+  for (const feedback of [
+    { ...good, id: 'old-week' },
+    { ...good, id: 'deload', completed: false },
+    { ...good, id: 'deload', effort: null },
+    { ...good, id: 'deload', recovery: null },
+  ]) {
+    assert.equal(adapt(plan, [feedback], null, schedule).plan.sessions[0]!.exercises[0]!.sets, 1);
+  }
+  const restored = adapt(plan, [{ ...good, id: 'deload' }], null, schedule);
+  assert.equal(restored.plan.sessions[0]!.exercises[0]!.sets, 2);
+  assert.deepEqual(restored.plan.usedObservationIds, ['deload']);
+});

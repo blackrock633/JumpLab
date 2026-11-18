@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type Session } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
 import type { Database } from './database.types';
 
@@ -29,8 +29,42 @@ const storage = {
 };
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const publicKey = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+const storageKey = 'sb-' + new URL(url || 'https://unconfigured.invalid').hostname.split('.')[0] + '-auth-token';
 export const configured = Boolean(url && publicKey && !url.includes('YOUR_PROJECT'));
 export const supabase = createClient<Database>(url || 'https://unconfigured.invalid', publicKey || 'unconfigured-public-key', {
-  auth: { storage, autoRefreshToken: true, persistSession: true, detectSessionInUrl: false, flowType: 'pkce' },
+  auth: { storageKey, storage, autoRefreshToken: true, persistSession: true, detectSessionInUrl: false, flowType: 'pkce' },
 });
 export const AUTH_REDIRECT = 'jumplab://auth/callback';
+
+let authEpoch = 0;
+let authenticatedOwner: string | undefined;
+supabase.auth.onAuthStateChange((_event, session) => {
+  if (authenticatedOwner !== session?.user.id) {
+    authenticatedOwner = session?.user.id;
+    authEpoch++;
+  }
+});
+
+export async function accountClient(owner: string) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.user.id !== owner || authenticatedOwner !== owner) throw Error('Sign in to this account to sync.');
+  const epoch = authEpoch;
+  const bearer = session.access_token;
+  const isCurrent = () => epoch === authEpoch && authenticatedOwner === owner;
+  const client = createClient<Database>(url || 'https://unconfigured.invalid', publicKey || 'unconfigured-public-key', {
+    accessToken: async () => {
+      if (!isCurrent()) throw Error('Account changed before dispatch.');
+      return bearer;
+    },
+  });
+  return { client, isCurrent };
+}
+
+export async function eraseDeletedSession(session: Session | null, owner: string) {
+  if (session && session.user.id !== owner) throw Error('Account changed during deletion.');
+  const { error } = await supabase.auth.signOut({ scope: 'local' });
+  if (error) throw Error('Account cleanup is pending. Unlock this iPhone and retry.');
+  await storage.removeItem(storageKey);
+  await storage.removeItem(storageKey + '-user');
+  await storage.removeItem(storageKey + '-code-verifier');
+}

@@ -14,6 +14,19 @@ import Foundation
       precondition(e[0].takeoff == [39.0 / 60, 40.0 / 60]); precondition(e[0].landing == [64.0 / 60, 65.0 / 60])
       print("PASS complete \(type)")
     }
+    var running = ContactDetector(type: "running")
+    for i in 0..<100 {
+      let jump = (40..<65).contains(i)
+      let alternate = (27..<36).contains(i)
+      let raised = jump || (65..<71).contains(i)
+      try running.feed(PoseFrame(time: Double(i) / 60,
+        leftY: jump || (alternate && i % 2 == 0) ? 0.22 : 0.1,
+        rightY: raised || (alternate && i % 2 == 1) ? 0.22 : 0.1,
+        hipY: jump ? 0.52 : 0.4, centerX: 0.4 + Double(i) / 800, scale: 0.7, confidence: 0.9, people: 1))
+    }
+    let approach = try running.finish(type: "running")
+    precondition(approach.count == 1)
+    precondition(approach[0].landing == [64.0 / 60, 65.0 / 60], "Landing brackets the first contacting foot")
     var repeated = ContactDetector()
     for i in 0..<160 { try repeated.feed(frame(i, lift: (40..<65).contains(i) || (95..<120).contains(i) ? 0.12 : 0)) }
     let twoEvents = try repeated.finish(type: "repeated")

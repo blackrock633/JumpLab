@@ -24,6 +24,8 @@ struct TransitionEvidence {
 // Experimental geometry heuristic over native Vision poses, not a validated contact classifier.
 // Initial quiet stance establishes a ground reference. Never infer through hidden feet or track loss.
 struct ContactDetector {
+  private let type: String
+  init(type: String = "standing") { self.type = type }
   private var calibration: [PoseFrame] = []
   private var ground: Double?
   private var hip: Double = 0
@@ -67,7 +69,10 @@ struct ContactDetector {
     let footLift = (min(f.leftY, f.rightY) - ground!) / f.scale
     let hipLift = (f.hipY - hip) / f.scale
     let airborne = footLift > 0.055 && hipLift > 0.05
-    let contact = (max(f.leftY, f.rightY) - ground!) / f.scale < 0.03
+    // In approach and repeated modes a single visible foot can establish contact.
+    let leftContact = abs(f.leftY - ground!) / f.scale < 0.03
+    let rightContact = abs(f.rightY - ground!) / f.scale < 0.03
+    let contact = type == "standing" ? leftContact && rightContact : leftContact || rightContact
     if airborne {
       guard firstLanding == nil else { throw DetectionFailure.unsuitable("Contact evidence is unstable. Use clearer footage.") }
       if firstAir == nil { firstAir = f.time }

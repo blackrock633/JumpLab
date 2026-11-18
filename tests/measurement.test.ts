@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GRAVITY, METHOD, captureTime, compatible, displayHeight, heightMeters, measurement, summary, validateTiming, type Timing } from '../src/core/measurement.ts';
+import { acceptedMeasurements, GRAVITY, METHOD, captureTime, compatible, displayHeight, heightMeters, measurement, summary, validateTiming, type Timing } from '../src/core/measurement.ts';
 const timing = (fps = 60, origin = 10): Timing => ({ originalFPS: fps, playbackFPS: fps, kind: 'original', confirmedOriginal: true, mappings: [], timestamps: Array.from({ length: fps * 2 }, (_, i) => origin + i / fps) });
 test('flight-time SI equation and rejection boundaries', () => {
   assert.equal(heightMeters(0.4), GRAVITY * 0.16 / 8);
@@ -45,4 +45,24 @@ test('low FPS broadens uncertainty, summaries and comparisons keep types/methods
 test('wide transition evidence cannot become a saved estimate', () => {
   const t = timing(24, 0);
   assert.throws(() => measurement('wide', 'standing', { takeoff: [t.timestamps[0]!, t.timestamps[3]!], landing: [t.timestamps[10]!, t.timestamps[11]!] }, t, '2026-01-01'), /uncertain/);
+});
+
+test('mapped capture cadence rejects compression and conflicting segment rates', () => {
+  const timestamps = Array.from({ length: 31 }, (_, i) => i / 30);
+  const mapped: Timing = { originalFPS: 60, playbackFPS: 30, kind: 'mapped', confirmedOriginal: true, timestamps,
+    mappings: [{ playbackStart: 0, playbackEnd: 1, captureStart: 0, captureEnd: 0.0001 }] };
+  assert.throws(() => validateTiming(mapped), /intervals/);
+  mapped.mappings = [
+    { playbackStart: 0, playbackEnd: 0.5, captureStart: 0, captureEnd: 0.2 },
+    { playbackStart: 0.5, playbackEnd: 1, captureStart: 0.2, captureEnd: 0.5 },
+  ];
+  assert.throws(() => validateTiming(mapped), /FPS conflicts/);
+});
+
+test('production acceptance rejects a native event whose minimum plausible airtime is too short', () => {
+  const t = timing();
+  const events: Parameters<typeof acceptedMeasurements>[0]['events'] = [
+    { takeoff: [t.timestamps[29]!, t.timestamps[30]!], landing: [t.timestamps[37]!, t.timestamps[41]!] },
+  ];
+  assert.throws(() => acceptedMeasurements({ timestamps: t.timestamps, playbackFPS: 60, events }, ['id'], 'standing', 60, true, '2026-11-17T00:00:00Z'), /Insufficient temporal evidence/);
 });

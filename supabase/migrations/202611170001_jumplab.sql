@@ -29,7 +29,7 @@ create table public.plans (
   id uuid primary key, user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
   revision integer not null check(revision > 0), data jsonb not null check(jsonb_typeof(data) = 'object'),
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique(id,user_id),
-  check (data->>'version' = 'conservative/1'), check (jsonb_typeof(data->'sessions') = 'array'),
+  check (data->>'version' in ('conservative/1','conservative/2')), check (jsonb_typeof(data->'sessions') = 'array'),
   check ((data->>'week')::integer > 0)
 );
 create table public.prescriptions (
@@ -53,7 +53,7 @@ create table public.jump_results (
   revision integer not null check(revision = 1), data jsonb not null check(jsonb_typeof(data) = 'object'),
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique(id,user_id),
   check(data ?& array['method','type','airtime','heightM','timing','evidence','heightRangeM','airtimeRange','confidence','trainingEligible','createdAt']),
-  check(data->>'method' = 'vision-feet-flight/0.1-unvalidated'),
+  check(data->>'method' in ('vision-feet-flight/0.1-unvalidated','vision-feet-flight/0.2-unvalidated')),
   check(data->>'type' in ('standing','running','repeated')),
   check((data->>'airtime')::numeric between 0.12 and 1.5),
   check(abs((data->>'heightM')::numeric - 9.80665 * power((data->>'airtime')::numeric,2) / 8) < 0.000001),
@@ -64,7 +64,7 @@ create table public.adaptations (
   plan_id uuid not null, data jsonb not null,
   created_at timestamptz not null default now(),
   foreign key(plan_id,user_id) references public.plans(id,user_id) on delete cascade,
-  check(data->>'version' = 'conservative/1'), check(length(data->>'reason') between 1 and 500)
+  check(data->>'version' in ('conservative/1','conservative/2')), check(length(data->>'reason') between 1 and 500)
 );
 create index plans_owner_date on public.plans(user_id,created_at desc,id);
 create index jumps_owner_date on public.jump_results(user_id,created_at desc,id);
@@ -78,12 +78,12 @@ alter table public.prescriptions enable row level security;
 alter table public.workouts enable row level security;
 alter table public.jump_results enable row level security;
 alter table public.adaptations enable row level security;
-create policy own_profile on public.profiles for select to authenticated using(user_id = auth.uid() and public.active_account());
-create policy own_plan on public.plans for select to authenticated using(user_id = auth.uid() and public.active_account());
-create policy own_prescription on public.prescriptions for select to authenticated using(user_id = auth.uid() and public.active_account());
-create policy own_workout on public.workouts for select to authenticated using(user_id = auth.uid() and public.active_account());
-create policy own_jump on public.jump_results for select to authenticated using(user_id = auth.uid() and public.active_account());
-create policy own_adaptation on public.adaptations for select to authenticated using(user_id = auth.uid() and public.active_account());
+create policy own_profile on public.profiles for select to authenticated using(user_id = (select auth.uid()) and (select public.active_account()));
+create policy own_plan on public.plans for select to authenticated using(user_id = (select auth.uid()) and (select public.active_account()));
+create policy own_prescription on public.prescriptions for select to authenticated using(user_id = (select auth.uid()) and (select public.active_account()));
+create policy own_workout on public.workouts for select to authenticated using(user_id = (select auth.uid()) and (select public.active_account()));
+create policy own_jump on public.jump_results for select to authenticated using(user_id = (select auth.uid()) and (select public.active_account()));
+create policy own_adaptation on public.adaptations for select to authenticated using(user_id = (select auth.uid()) and (select public.active_account()));
 revoke all on all tables in schema public from anon, authenticated;
 grant select on public.profiles,public.plans,public.prescriptions,public.workouts,public.jump_results,public.adaptations to authenticated;
 
@@ -95,12 +95,15 @@ create table private.mutation_limits (
 );
 alter table private.mutation_limits enable row level security;
 create function private.limit_write(who uuid) returns void language plpgsql security definer set search_path = '' as $$
-declare bucket private.mutation_limits; current_minute timestamptz := date_trunc('minute',clock_timestamp()); current_day date := (clock_timestamp() at time zone 'UTC')::date;
+declare bucket private.mutation_limits; sampled_at timestamptz; current_minute timestamptz; current_day date;
 begin
-  insert into private.mutation_limits values(who,current_minute,0,current_day,0) on conflict(user_id) do nothing;
+  insert into private.mutation_limits values(who,'-infinity',0,'-infinity',0) on conflict(user_id) do nothing;
   select * into bucket from private.mutation_limits where user_id = who for update;
-  if bucket.minute <> current_minute then bucket.minute_count := 0; end if;
-  if bucket.day <> current_day then bucket.day_count := 0; end if;
+  sampled_at := clock_timestamp();
+  current_minute := greatest(bucket.minute,date_trunc('minute',sampled_at));
+  current_day := greatest(bucket.day,(sampled_at at time zone 'UTC')::date);
+  if bucket.minute < current_minute then bucket.minute_count := 0; end if;
+  if bucket.day < current_day then bucket.day_count := 0; end if;
   if bucket.minute_count >= 60 or bucket.day_count >= 1000 then raise exception 'mutation_quota' using errcode = 'P0001'; end if;
   update private.mutation_limits set minute=current_minute,minute_count=bucket.minute_count+1,day=current_day,day_count=bucket.day_count+1 where user_id=who;
 end $$;
@@ -128,7 +131,7 @@ begin
     array['string','string','string','string','number','number','boolean','object','object','array','array']) is distinct from true or
     private.typed_fields(t,array['originalFPS','playbackFPS','kind','confirmedOriginal','mappings','timestamps'],array['number','number','string','boolean','array','array']) is distinct from true or
     private.typed_fields(e,array['takeoff','landing'],array['array','array']) is distinct from true then return false; end if;
-  if v->>'method' <> 'vision-feet-flight/0.1-unvalidated' or v->>'type' not in ('standing','running','repeated') or
+  if v->>'method' not in ('vision-feet-flight/0.1-unvalidated','vision-feet-flight/0.2-unvalidated') or v->>'type' not in ('standing','running','repeated') or
     v->>'confidence' <> 'experimental' or v->'trainingEligible' <> 'false'::jsonb or
     t->>'kind' <> 'original' or t->'confirmedOriginal' <> 'true'::jsonb or jsonb_array_length(t->'mappings') <> 0 or
     jsonb_array_length(e->'takeoff') <> 2 or jsonb_array_length(e->'landing') <> 2 or
@@ -140,7 +143,7 @@ begin
   for x in select value from jsonb_array_elements(t->'timestamps') loop
     if jsonb_typeof(x) <> 'number' then return false; end if;
     frame_time := x::text::numeric;
-    if previous_time is not null and (frame_time <= previous_time or frame_time-previous_time > 3/fps) then return false; end if;
+    if previous_time is not null and ((frame_time-previous_time)*fps < 0.24999999 or (frame_time-previous_time)*fps > 3.00000001) then return false; end if;
     previous_time := frame_time;
   end loop;
   select percentile_cont(0.5) within group (order by gap) into median_interval from (
@@ -163,15 +166,13 @@ exception when others then return false;
 end $$;
 revoke all on function private.valid_jump(jsonb) from public,anon,authenticated;
 
-create function public.save_record(kind text, record_id uuid, expected_revision integer, payload jsonb) returns integer
-language plpgsql security definer set search_path = '' as $$
+create function private.write_record(kind text, record_id uuid, expected_revision integer, payload jsonb) returns integer
+language plpgsql set search_path = '' as $$
 declare who uuid := auth.uid(); current_revision integer; previous jsonb; item jsonb; exercise jsonb; prescribed jsonb; parent uuid; result_revision integer;
 begin
-  if who is null or not public.active_account() then raise exception 'account_required' using errcode='28000'; end if;
   if kind is null or record_id is null or expected_revision is null or kind not in ('profile','plan','workout','jump') or expected_revision < 0 or expected_revision > 100000 or
     payload is null or jsonb_typeof(payload) <> 'object' or octet_length(payload::text) > 262144 then raise exception 'invalid_record' using errcode='22023'; end if;
-  perform private.limit_write(who);
-  -- Serialize all writes for this account, including duplicate/lost-ack retries.
+  -- The public entry point holds the account quota row lock.
   if kind = 'profile' then
     if private.typed_fields(payload,array['goal','experience','startDate','days','practiceDays','startHour','weeklyMinutes','sessionMinutes','equipment','weightKg','displayUnits','limitation','pain'],
       array['string','string','string','array','array','number','number','number','string','number','string','string','boolean']) is distinct from true or
@@ -185,17 +186,24 @@ begin
     parent := (payload->>'prescriptionId')::uuid;
     select data into prescribed from public.prescriptions where id=parent and user_id=who;
     if prescribed is null then raise exception 'prescription_required' using errcode='22023'; end if;
-    if private.typed_fields(payload,array['prescriptionId','sets','completed','effort','recovery','pain','updatedAt'],array['string','array','boolean','number','string','boolean','string']) is distinct from true or jsonb_array_length(payload->'sets') > 100 then raise exception 'invalid_sets' using errcode='22023'; end if;
+    if private.typed_fields(payload,array['prescriptionId','sets','completed','pain','updatedAt'],array['string','array','boolean','boolean','string']) is distinct from true or
+      not(payload ?& array['effort','recovery','completedAt']) or jsonb_typeof(payload->'effort') not in ('number','null') or
+      jsonb_typeof(payload->'recovery') not in ('string','null') or
+      (payload->>'completed')::boolean <> (jsonb_typeof(payload->'completedAt') = 'string') or
+      (payload->>'updatedAt')::timestamptz is null or
+      ((payload->>'completed')::boolean and (payload->>'completedAt')::timestamptz is null) or
+      record_id <> (prescribed->>'workoutId')::uuid or jsonb_array_length(payload->'sets') > 100 then raise exception 'invalid_sets' using errcode='22023'; end if;
     for item in select value from jsonb_array_elements(payload->'sets') loop
       select value into exercise from jsonb_array_elements(prescribed->'exercises') where value->>'id'=item->>'exerciseId';
       if exercise is null or private.typed_fields(item,array['exerciseId','index','reps','done'],array['string','number','number','boolean']) is distinct from true or
         not(item ? 'loadKg') or jsonb_typeof(item->'loadKg') not in ('number','null') or
         (item->>'index')::integer < 0 or (item->>'index')::integer >= (exercise->>'sets')::integer or
         (item->>'reps')::integer not between 0 and 100 or
-        (item->'loadKg' <> 'null'::jsonb and (item->>'loadKg')::numeric not between 0 and 500) then raise exception 'invalid_set' using errcode='22023'; end if;
+        (item->'loadKg' <> 'null'::jsonb and ((item->>'loadKg')::numeric not between 0 and 500 or exercise->>'id' <> 'squat' or exercise->>'name' = 'Chair squat')) then raise exception 'invalid_set' using errcode='22023'; end if;
     end loop;
-    if exists(select 1 from jsonb_array_elements(payload->'sets') x group by x->>'exerciseId',x->>'index' having count(*)>1) then raise exception 'duplicate_set'; end if;
+    if exists(select 1 from jsonb_array_elements(payload->'sets') x group by x->>'exerciseId',x->>'index' having count(*)>1) then raise exception 'duplicate_set' using errcode='22023'; end if;
   else
+    if lower(payload->>'id') is distinct from record_id::text then raise exception 'invalid_measurement_id' using errcode='22023'; end if;
     if private.valid_jump(payload) is distinct from true then raise exception 'invalid_measurement' using errcode='22023'; end if;
     select revision,data into current_revision,previous from public.jump_results where id=record_id and user_id=who;
   end if;
@@ -208,21 +216,44 @@ begin
       on conflict(id) do update set revision=excluded.revision,data=excluded.data,updated_at=now() where profiles.user_id=who;
   elsif kind='plan' then
     if current_revision is not null then raise exception 'create_new_future_plan' using errcode='22023'; end if;
-    if private.typed_fields(payload,array['version','sessions','week','explanation'],array['string','array','number','string']) is distinct from true or payload->>'version' is distinct from 'conservative/1' or
+    if private.typed_fields(payload,array['version','sessions','week','explanation'],array['string','array','number','string']) is distinct from true or payload->>'version' not in ('conservative/1','conservative/2') or
+      (payload->>'week')::integer not between 1 and 5200 or length(payload->>'explanation') not between 1 and 500 or
+      (payload ? 'programId' and (jsonb_typeof(payload->'programId') <> 'string' or (payload->>'programId')::uuid is null)) or
+      (payload ? 'changeReason' and (jsonb_typeof(payload->'changeReason') <> 'string' or length(payload->>'changeReason') not between 1 and 500)) or
       jsonb_typeof(payload->'sessions') <> 'array' or jsonb_array_length(payload->'sessions') not between 1 and 3 then raise exception 'invalid_plan' using errcode='22023'; end if;
+    if payload ? 'usedObservationIds' then
+      if jsonb_typeof(payload->'usedObservationIds') <> 'array' or jsonb_array_length(payload->'usedObservationIds') > 1000 then
+        raise exception 'invalid_observation_ids' using errcode='22023';
+      end if;
+      if exists(select 1 from jsonb_array_elements(payload->'usedObservationIds') j
+        where jsonb_typeof(j) <> 'string' or trim(both '"' from j::text) !~* '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$') then
+        raise exception 'invalid_observation_id' using errcode='22023';
+      end if;
+    end if;
     for item in select value from jsonb_array_elements(payload->'sessions') loop
       if private.typed_fields(item,array['prescriptionId','workoutId','id','scheduledOn','day','startHour','minutes','exercises'],array['string','string','string','string','number','number','number','array']) is distinct from true or
+        (item->>'scheduledOn') !~ '^\d{4}-\d{2}-\d{2}$' or (item->>'scheduledOn')::date::text <> item->>'scheduledOn' or
+        extract(dow from (item->>'scheduledOn')::date) <> (item->>'day')::integer or
+        (item->>'prescriptionId')::uuid = (item->>'workoutId')::uuid or
         (item->>'day')::integer not between 0 and 6 or (item->>'minutes')::numeric not between 1 and 120 or
         (item->>'startHour')::integer not between 0 and 23 or jsonb_typeof(item->'exercises') <> 'array' or
-        jsonb_array_length(item->'exercises') not between 1 and 5 then raise exception 'invalid_session'; end if;
+        jsonb_array_length(item->'exercises') not between 1 and 5 then raise exception 'invalid_session' using errcode='22023'; end if;
       for exercise in select value from jsonb_array_elements(item->'exercises') loop
         if private.typed_fields(exercise,array['id','name','instructions','sets','baseSets','reps','effort','restSeconds'],array['string','string','string','number','number','number','string','number']) is distinct from true or
           not(exercise ? 'loadKg') or jsonb_typeof(exercise->'loadKg') not in ('number','null') or
           exercise->>'id' not in ('squat','jump','calf') or (exercise->>'sets')::integer not between 0 and 5 or
+          (exercise->>'baseSets')::integer not between 1 and 5 or (exercise->>'sets')::integer > (exercise->>'baseSets')::integer or
           (exercise->>'reps')::integer not between 1 and 20 or (exercise->>'restSeconds')::integer not between 30 and 300 or
-          (exercise->'loadKg' <> 'null'::jsonb and (exercise->>'loadKg')::numeric not between 0 and 500) then raise exception 'invalid_exercise'; end if;
+          (exercise->'loadKg' <> 'null'::jsonb and (exercise->>'loadKg')::numeric not between 0 and 500) then raise exception 'invalid_exercise' using errcode='22023'; end if;
       end loop;
+      if exists(select 1 from jsonb_array_elements(item->'exercises') e group by e->>'id' having count(*) > 1) then
+        raise exception 'duplicate_exercise' using errcode='22023';
+      end if;
     end loop;
+    if exists(select 1 from jsonb_array_elements(payload->'sessions') s group by s->>'workoutId' having count(*) > 1) or
+      exists(select 1 from jsonb_array_elements(payload->'sessions') s group by s->>'scheduledOn' having count(*) > 1) then
+      raise exception 'duplicate_session' using errcode='22023';
+    end if;
     insert into public.plans(id,user_id,revision,data) values(record_id,who,result_revision,payload);
     for item in select value from jsonb_array_elements(payload->'sessions') loop
       insert into public.prescriptions(id,user_id,plan_id,data) values((item->>'prescriptionId')::uuid,who,record_id,item);
@@ -239,13 +270,30 @@ begin
   if not found then raise exception 'ownership_conflict' using errcode='42501'; end if;
   return result_revision;
 end $$;
+revoke all on function private.write_record(text,uuid,integer,jsonb) from public,anon,authenticated;
+
+-- Catch expected validation/conflict errors in a subtransaction so rejected attempts
+-- still consume quota. Unexpected database failures are allowed to roll back.
+create function public.save_record(kind text, record_id uuid, expected_revision integer, payload jsonb) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare who uuid := auth.uid();
+begin
+  if who is null or not public.active_account() then raise exception 'account_required' using errcode='28000'; end if;
+  perform private.limit_write(who);
+  begin
+    return jsonb_build_object('revision',private.write_record(kind,record_id,expected_revision,payload));
+  exception when data_exception or integrity_constraint_violation or serialization_failure or insufficient_privilege or raise_exception then
+    return jsonb_build_object('code',sqlstate);
+  end;
+end $$;
 revoke all on function public.save_record(text,uuid,integer,jsonb) from public,anon;
 grant execute on function public.save_record(text,uuid,integer,jsonb) to authenticated;
 
 create function public.delete_account() returns void language plpgsql security definer set search_path = '' as $$
 declare who uuid := auth.uid();
 begin
-  if who is null or not public.active_account() then raise exception 'account_required' using errcode='28000'; end if;
+  if who is null then raise exception 'account_required' using errcode='28000'; end if;
+  if not public.active_account() then return; end if;
   perform private.limit_write(who);
   delete from auth.users where id=who;
 end $$;

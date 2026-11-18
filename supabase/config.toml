@@ -8,6 +8,9 @@ max_rows = 100
 [db]
 port = 54322
 major_version = 17
+[inbucket]
+enabled = true
+port = 54324
 [auth]
 enabled = true
 site_url = "jumplab://auth/callback"

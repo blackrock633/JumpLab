@@ -4,10 +4,17 @@ import { ProfileForm } from '../src/screens/ProfileForm';
 import { Analyze } from '../src/screens/Analyze';
 import { Workout } from '../src/screens/Workout';
 import { generate, type Profile } from '../src/core/training';
-import Native from '../modules/jump-analysis/src';
-import { saveBatch } from '../src/data/store';
+import Native, { type AnalysisReceipt } from '../modules/jump-analysis/src';
+import { commitAnalysis } from '../src/data/store';
 jest.mock('../modules/jump-analysis/src', () => ({ __esModule: true, default: { pick: jest.fn(), analyze: jest.fn(), cancel: jest.fn(), discard: jest.fn().mockResolvedValue(undefined) } }));
-jest.mock('../src/data/store', () => ({ saveBatch: jest.fn().mockResolvedValue(undefined) }));
+jest.mock('../src/data/store', () => ({
+  RejectedAnalysis: class extends Error {},
+  recoverAnalysis: jest.fn().mockResolvedValue(null),
+  commitAnalysis: jest.fn(async (_owner, r) => {
+    const { acceptedMeasurements } = require('../src/core/measurement');
+    return acceptedMeasurements(r.analysis, r.ids, r.type, r.fps, r.confirmed, r.createdAt);
+  }),
+}));
 jest.mock('expo-crypto', () => ({ randomUUID: () => 'e03beac7-ff3d-4407-9943-e45143c04d0c' }));
 const profile: Profile = { goal: 'standing', experience: 'new', days: [1, 3], practiceDays: [], startHour: 17, weeklyMinutes: 60, sessionMinutes: 30, equipment: 'none', weightKg: 70, displayUnits: 'kg', knownSquatKg: null, limitation: 'none', pain: false, startDate: '2026-11-16' };
 test('onboarding allows unknown strength, canonical units and schedule validation', async () => {
@@ -32,19 +39,24 @@ test('picker cancellation and each jump type remain usable', async () => {
   for (const name of ['standing', 'running', 'repeated']) await fireEvent.press(screen.getByRole('button', { name }));
   await fireEvent.press(screen.getByRole('button', { name: 'Choose video' }));
   await screen.findByText(/Import cancelled/);
-  expect(Native.analyze).not.toHaveBeenCalled(); expect(saveBatch).not.toHaveBeenCalled();
+  expect(Native.analyze).not.toHaveBeenCalled(); expect(commitAnalysis).not.toHaveBeenCalled();
 });
+function testReceipt(timestamps: number[]): AnalysisReceipt {
+  return { id: 'clip', ids: ['jump'], type: 'standing', fps: 60, confirmed: true, createdAt: '2026-11-17T00:00:00Z',
+    analysis: { timestamps, playbackFPS: 60, events: [{ takeoff: [timestamps[30]!, timestamps[31]!], landing: [timestamps[54]!, timestamps[55]!] }], elapsedSeconds: 1, decodedFrames: 120, peakResidentBytes: 1000 } };
+}
 test('metadata FPS prefill, confirmation and automatic result flow (UI mock only)', async () => {
   jest.mocked(Native.pick).mockResolvedValue({ id: 'clip', playbackFPS: 60, duration: 2, bytes: 1000, hasRetiming: false });
   const timestamps = Array.from({ length: 120 }, (_, i) => i / 60);
-  jest.mocked(Native.analyze).mockResolvedValue({ timestamps, events: [{ takeoff: [timestamps[30]!, timestamps[31]!], landing: [timestamps[54]!, timestamps[55]!] }], elapsedSeconds: 1, decodedFrames: 120, peakResidentBytes: 1000 });
+  jest.mocked(Native.analyze).mockResolvedValue(testReceipt(timestamps));
   await render(<Analyze owner="A" onSaved={jest.fn()} />);
   await fireEvent.press(screen.getByRole('button', { name: 'Choose video' }));
   await waitFor(() => expect(screen.getByLabelText('Original recording FPS').props.value).toBe('60'));
   await fireEvent.press(screen.getByRole('button', { name: /I confirm/ }));
   await fireEvent.press(screen.getByRole('button', { name: 'Analyze on iPhone' }));
-  await screen.findByText(/Estimated jump height:/); expect(saveBatch).toHaveBeenCalledTimes(1);
-  expect(jest.mocked(saveBatch).mock.calls[0]![1][0]!.payload).toMatchObject({ confidence: 'experimental', trainingEligible: false });
+  await screen.findByText(/Estimated jump height:/); expect(commitAnalysis).toHaveBeenCalledTimes(1);
+  expect(Native.analyze).toHaveBeenCalledWith('clip', 60, 'standing', true, 'A');
+  expect(jest.mocked(commitAnalysis).mock.calls[0]![1].ids).toEqual(['jump']);
 });
 test('analysis rejection saves no fabricated result and offers another import', async () => {
   jest.mocked(Native.pick).mockResolvedValue({ id: 'clip', playbackFPS: 30, duration: 2, bytes: 1000, hasRetiming: false });
@@ -53,7 +65,7 @@ test('analysis rejection saves no fabricated result and offers another import', 
   await fireEvent.press(screen.getByRole('button', { name: 'Choose video' }));
   await screen.findByLabelText('Original recording FPS'); await fireEvent.press(screen.getByRole('button', { name: /I confirm/ }));
   await fireEvent.press(screen.getByRole('button', { name: 'Analyze on iPhone' }));
-  await screen.findByText(/Feet hidden/); expect(saveBatch).not.toHaveBeenCalled();
+  await screen.findByText(/Feet hidden/); expect(commitAnalysis).not.toHaveBeenCalled();
   expect(screen.getByRole('button', { name: 'Choose video' })).toBeEnabled();
 });
 test('prescribed set logging persists progress and pain stop/modify feedback', async () => {
@@ -69,8 +81,8 @@ test('prescribed set logging persists progress and pain stop/modify feedback', a
 test('failed estimate save remains unavailable until a stable-id retry succeeds (UI mock only)', async () => {
   jest.mocked(Native.pick).mockResolvedValue({ id: 'clip', playbackFPS: 60, duration: 2, bytes: 1000, hasRetiming: false });
   const timestamps = Array.from({ length: 120 }, (_, i) => i / 60);
-  jest.mocked(Native.analyze).mockResolvedValue({ timestamps, events: [{ takeoff: [timestamps[30]!, timestamps[31]!], landing: [timestamps[54]!, timestamps[55]!] }], elapsedSeconds: 1, decodedFrames: 120, peakResidentBytes: 1000 });
-  jest.mocked(saveBatch).mockRejectedValueOnce(Error('disk unavailable')).mockResolvedValue(undefined);
+  jest.mocked(Native.analyze).mockResolvedValue(testReceipt(timestamps));
+  jest.mocked(commitAnalysis).mockRejectedValueOnce(Error('Could not save the estimates'));
   await render(<Analyze owner="A" onSaved={jest.fn()} />);
   await fireEvent.press(screen.getByRole('button', { name: 'Choose video' }));
   await screen.findByLabelText('Original recording FPS');
@@ -80,6 +92,19 @@ test('failed estimate save remains unavailable until a stable-id retry succeeds 
   expect(screen.queryByText(/Estimated jump height:/)).toBeNull();
   await fireEvent.press(screen.getByRole('button', { name: 'Retry saving estimates' }));
   await screen.findByText(/Estimated jump height:/);
-  expect(jest.mocked(saveBatch).mock.calls[0]).toEqual(jest.mocked(saveBatch).mock.calls[1]);
+  expect(jest.mocked(commitAnalysis).mock.calls[0]).toEqual(jest.mocked(commitAnalysis).mock.calls[1]);
   expect(Native.analyze).toHaveBeenCalledTimes(1);
+});
+
+test('fractional load entry preserves the decimal and missing feedback through save', async () => {
+  const onSave = jest.fn().mockResolvedValue(undefined);
+  const session = { ...generate({ ...profile, equipment: 'dumbbells' }).sessions[0]!, prescriptionId: 'p', workoutId: 'w' };
+  await render(<Workout session={session} onSave={onSave} paused={false} />);
+  const label = 'Set 1, load kg (blank = bodyweight or unknown)';
+  await fireEvent.changeText(screen.getByLabelText(label), '20.');
+  expect(screen.getByLabelText(label).props.value).toBe('20.');
+  await fireEvent.changeText(screen.getByLabelText(label), '20.5');
+  await fireEvent.press(screen.getByRole('button', { name: 'Finish workout' }));
+  expect(onSave.mock.calls.at(-1)[0]).toMatchObject({ effort: null, recovery: null, completed: true });
+  expect(onSave.mock.calls.at(-1)[0].sets[0].loadKg).toBe(20.5);
 });

@@ -1,4 +1,5 @@
 import { readFile, readdir } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { sourceFiles } from './source-files.mjs';
 const patterns = [ /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/, /\b(?:sb_secret|sk_live|sk_proj)_[A-Za-z0-9_-]{15,}/, /\bAKIA[0-9A-Z]{16}\b/, /eyJ[A-Za-z0-9_-]{15,}\.eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}/, /postgres(?:ql)?:\/\/[^\s:]+:[^\s@]+@/ ];
@@ -25,5 +26,15 @@ async function scanBundle(dir) {
   }
 }
 await scanBundle('.cache/ios-export');
-console.log(`Pattern scan: ${count} findings; source plus ${bundleFiles} exported asset files. Limited patterns only, not a complete secret/security audit or history scan.`);
-process.exitCode = count ? 1 : 0;
+await scanBundle('.cache/DerivedData/Build/Products/Debug-iphonesimulator/JumpLab.app');
+const history = spawnSync('git', ['log', '--all', '-p', '--no-ext-diff', '--no-textconv', '--format='], {
+  encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
+});
+if (history.status === 0) {
+  if (patterns.some(pattern => pattern.test(history.stdout))) {
+    console.error('Potential credential in reachable Git history. The value is withheld.');
+    count++;
+  }
+} else console.error('Git history scan unavailable. Check repository read access or scan commits in batches.');
+console.log('Pattern scan: ' + count + ' findings across source, ' + bundleFiles + ' client asset files and ' + (history.status === 0 ? 'reachable Git patches.' : 'no Git history.'));
+process.exitCode = count ? 1 : history.status === 0 ? 0 : 2;

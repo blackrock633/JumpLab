@@ -6,11 +6,11 @@ import Darwin
       fputs("Usage: video-evaluation <local-clip> <original-fps> <standing|running|repeated>\n", stderr); exit(64)
     }
     var report: [String: Any] = ["os": ProcessInfo.processInfo.operatingSystemVersionString,
-      "host": "local macOS CLI (not physical iPhone)", "method": "vision-feet-flight/0.1-unvalidated"]
+      "host": "local macOS CLI (not physical iPhone)"]
     let start = ProcessInfo.processInfo.systemUptime
     do {
       let value = try await VideoAnalyzer().run(URL(fileURLWithPath: CommandLine.arguments[1]), fps: fps, type: CommandLine.arguments[3], deleteAfter: false)
-      report["outcome"] = "accept"; report["analysis"] = value
+      report["analysis"] = value
     } catch { report["outcome"] = "reject"; report["reason"] = String(describing: error) }
     report["pipelineElapsedSeconds"] = ProcessInfo.processInfo.systemUptime - start
     var usage = rusage(); getrusage(RUSAGE_SELF, &usage)

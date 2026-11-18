@@ -13,7 +13,7 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
-      save_record: { Args: { kind: string; record_id: string; expected_revision: number; payload: Json }; Returns: number };
+      save_record: { Args: { kind: string; record_id: string; expected_revision: number; payload: Json }; Returns: Json };
       delete_account: { Args: Record<string, never>; Returns: undefined };
       active_account: { Args: Record<string, never>; Returns: boolean };
     };

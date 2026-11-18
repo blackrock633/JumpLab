@@ -1,8 +1,10 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { resolve, dirname, relative } from 'node:path';
+import { createReadStream } from 'node:fs';
+import { readFile, writeFile, mkdir, realpath } from 'node:fs/promises';
+import { resolve, dirname, relative, isAbsolute, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { aggregate, matchEvents, validateFixtures } from './evaluation.mjs';
+import { acceptedMeasurements, METHOD } from '../src/core/measurement.ts';
 const manifestPath = resolve(process.argv[2] ?? 'fixtures/manifest.json');
 try {
   const manifest = validateFixtures(JSON.parse(await readFile(manifestPath, 'utf8')));
@@ -12,15 +14,29 @@ try {
   if (compile.status !== 0) process.exit(compile.status ?? 1);
   const rows = [];
   for (const c of manifest.clips) {
-    const path = resolve(dirname(manifestPath), c.file);
-    if (relative(dirname(manifestPath), path).startsWith('..')) throw Error('Clip must be within fixture directory.');
-    const bytes = await readFile(path);
-    if (createHash('sha256').update(bytes).digest('hex') !== c.sha256) throw Error(`Clip hash mismatch: ${c.id}`);
+    const fixtureDir = await realpath(dirname(manifestPath));
+    const path = await realpath(resolve(fixtureDir, c.file));
+    const within = relative(fixtureDir, path);
+    if (isAbsolute(within) || within === '..' || within.startsWith('..' + sep)) throw Error('Clip must be within fixture directory.');
+    const hash = createHash('sha256');
+    for await (const bytes of createReadStream(path)) hash.update(bytes);
+    if (hash.digest('hex') !== c.sha256) throw Error(`Clip hash mismatch: ${c.id}`);
     const run = spawnSync(resolve('.cache/video-evaluation'), [path, String(c.originalFPS), c.jumpType], { encoding: 'utf8', maxBuffer: 2_000_000, timeout: 300_000 });
     if (run.status !== 0) throw Error(`Native evaluation failed: ${c.id}. No accuracy result produced.`);
     const actual = JSON.parse(run.stdout);
-    const origin = actual.analysis?.timestamps[0] ?? 0;
-    const detected = (actual.analysis?.events ?? []).map(e => ({ takeoffSeconds: (e.takeoff[0] + e.takeoff[1]) / 2 - origin, landingSeconds: (e.landing[0] + e.landing[1]) / 2 - origin }));
+    actual.method = METHOD;
+    const detected = [];
+    if (actual.analysis) {
+      try {
+        const values = acceptedMeasurements(actual.analysis, actual.analysis.events.map((_, i) => String(i)), c.jumpType, c.originalFPS, true, new Date().toISOString());
+        actual.outcome = 'accept';
+        for (const value of values) {
+          const origin = value.timing.timestamps[0];
+          const [a, b] = value.evidence.takeoff, [c, d] = value.evidence.landing;
+          detected.push({ takeoffSeconds: (a + b) / 2 - origin, landingSeconds: (c + d) / 2 - origin });
+        }
+      } catch (error) { actual.outcome = 'reject'; actual.reason = error.message; }
+    }
     rows.push({ id: c.id, type: c.jumpType, category: c.category, reference: c.reference, referenceEvents: c.expected.events.length, expected: c.expected.outcome, outcome: actual.outcome, match: matchEvents(detected, c.expected.events), actual });
   }
   const missingCoverage = ['standing', 'running', 'repeated', 'original-cfr', 'original-vfr', 'slow-motion', 'exported', 'failure'].filter(k => !rows.some(r => r.type === k || r.category === k));

@@ -50,3 +50,15 @@ export function aggregate(rows) {
     unexpectedRejections: rows.filter(r => r.outcome === 'reject' && r.expected === 'accept').length,
     errors: Object.fromEntries(['takeoffSeconds', 'landingSeconds', 'airtimeSeconds', 'heightMeters'].map(k => [k, errors.length ? { meanAbsolute: errors.reduce((s, e) => s + Math.abs(e[k]), 0) / errors.length, maxAbsolute: Math.max(...errors.map(e => Math.abs(e[k]))) } : null])) };
 }
+
+export function missingEvaluationCoverage(rows) {
+  const accepted = rows.filter(r => r.expected === 'accept' && r.outcome === 'accept' && r.match.matched > 0);
+  const rejected = rows.filter(r => r.expected === 'reject' && r.outcome === 'reject');
+  return [
+    ...['standing', 'running', 'repeated'].filter(type => !accepted.some(r => r.type === type)).map(type => 'accepted-' + type),
+    ...(!accepted.some(r => r.type === 'repeated' && r.referenceEvents >= 2 && r.match.matched >= 2) ? ['repeated-multiple-events'] : []),
+    ...['original-cfr', 'original-vfr'].filter(category => !accepted.some(r => r.category === category)),
+    ...['slow-motion', 'exported', 'failure'].filter(category => !rejected.some(r => r.category === category)),
+    ...(!accepted.length ? ['matched-reference-events'] : []),
+  ];
+}

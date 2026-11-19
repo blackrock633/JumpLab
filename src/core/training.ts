@@ -27,6 +27,13 @@ export function validDate(value: string) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 }
 export function localDate(d = new Date()) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+export function canPrepareNextWeek<T extends Pick<Session, 'scheduledOn'>>(
+  sessions: readonly T[], completed: (session: T) => boolean, now = new Date(),
+) {
+  const today = localDate(now);
+  return sessions.every(session => session.scheduledOn < today ||
+    (session.scheduledOn === today && completed(session)));
+}
 export function canOpenWorkout(session: Session, completed: boolean, now = new Date()) {
   return completed || session.scheduledOn === localDate(now);
 }

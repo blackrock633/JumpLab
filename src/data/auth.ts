@@ -70,10 +70,9 @@ export async function accountClient(owner: string) {
 }
 
 export async function eraseDeletedSession(session: Session | null, owner: string) {
-  if (session && session.user.id !== owner) throw Error('Account changed during deletion.');
+  if (session && session.user.id !== owner) throw Error('Account changed during cleanup.');
+  const storedOwner = await offlineSessionOwner();
+  if (storedOwner && storedOwner !== owner) throw Error('Account changed during cleanup.');
   const { error } = await supabase.auth.signOut({ scope: 'local' });
-  if (error) throw Error('Account cleanup is pending. Unlock this iPhone and retry.');
-  await storage.removeItem(storageKey);
-  await storage.removeItem(storageKey + '-user');
-  await storage.removeItem(storageKey + '-code-verifier');
+  if (error) throw Error('Account cleanup is pending. Reconnect, unlock this iPhone, and retry.');
 }

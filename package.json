@@ -18,6 +18,7 @@
     "test:ui": "jest --runInBand",
     "evaluate:video": "node scripts/evaluate.mjs",
     "build:ios:simulator": "sh scripts/build-ios.sh",
+    "check:database-types": "sh scripts/check-database-types.sh",
     "check:dependencies": "npm audit --omit=dev",
     "check:secrets": "node scripts/check-secrets.mjs",
     "check:docs": "node scripts/check-docs.mjs"

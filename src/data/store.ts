@@ -5,7 +5,7 @@ import { randomUUID } from 'expo-crypto';
 import { accountClient } from './auth';
 import type { Json } from './database.types';
 import { drain, type Pending, type WriteKind, type Outcome } from '../core/queue';
-import { initialize, assertOwner, changeAccount, putLocal, putBatch, type DiskRow, recentJumpRows, readPending, readPendingStatus, mergeRemote, reconcileWrite } from './local';
+import { initialize, assertOwner, changeAccount, putLocal, putBatch, type DiskRow, recentJumpRows, readPending, readPendingStatus, mergeRemote, reconcileWrite, workoutPlanState, markSignOut } from './local';
 
 export type LocalRecord<T = unknown> = { id: string; owner: string; kind: WriteKind; payload: T; revision: number };
 let dbPromise: Promise<SQLite.SQLiteDatabase> | undefined;
@@ -28,6 +28,7 @@ export class UnsyncedAccount extends Error {}
 export async function switchAccount(owner: string, discard = false) {
   return serial(async () => {
     const db = await database();
+    if (await signOutStatus()) throw Error('Finish erasing the previous sign-in before opening an account.');
     const previous = await cachedAccount();
     const preserve = previous !== owner && !discard ? previous : null;
     if (preserve && await db.getFirstAsync('SELECT 1 FROM pending WHERE owner=? LIMIT 1', preserve)) {
@@ -55,7 +56,7 @@ export async function records<T>(owner: string, kind: WriteKind): Promise<LocalR
     return rows.map(r => ({ ...r, payload: JSON.parse(r.payload) as T }));
   });
 }
-export type PendingStatus = Omit<Pending, 'payload'>;
+export type PendingStatus = Omit<Pending, 'payload' | 'replacement'> & { replacement?: { id: string } };
 export async function pending(owner: string): Promise<PendingStatus[]> {
   return serial(async () => {
     const db = await database(); await assertOwner(db, owner);
@@ -74,12 +75,20 @@ export async function resolveConflict(owner: string, id: string, choice: 'remote
   let query = client.from(tables[queued.kind]).select('id,user_id,revision,data').eq('user_id', owner);
   if (queued.kind !== 'profile') query = query.eq('id', id);
   const { data, error } = await query.maybeSingle();
-  if (!isCurrent() || error || !data) throw Error('Could not load the saved version. Your local work is preserved.');
+  if (!isCurrent() || error || (!data && (queued.kind !== 'plan' || choice !== 'remote'))) {
+    throw Error('Could not load the saved version. Your local work is preserved.');
+  }
   if (choice === 'local' && (queued.kind === 'jump' || queued.kind === 'plan')) throw Error('Saved measurements and plans are immutable. Keep the saved version or retain this local conflict for support.');
   await serial(() => db.withExclusiveTransactionAsync(async tx => {
     await assertOwner(tx, owner);
     const latest = await tx.getFirstAsync<{ value: string }>('SELECT value FROM pending WHERE owner=? AND id=?', owner, id);
     if (!isCurrent() || latest?.value !== found?.value) throw Error('The local record changed. Review it again.');
+    if (!data) {
+      // A plan built under an obsolete profile revision was never published.
+      // Keep its local prescription available to open existing workout history.
+      await tx.runAsync('DELETE FROM pending WHERE id=? AND owner=?', id, owner);
+      return;
+    }
     if (data.id !== id) {
       await tx.runAsync('DELETE FROM records WHERE id=? AND owner=?', data.id, owner);
       await tx.runAsync('UPDATE records SET id=? WHERE id=? AND owner=?', data.id, id, owner);
@@ -92,6 +101,7 @@ export async function resolveConflict(owner: string, id: string, choice: 'remote
       await tx.runAsync('UPDATE pending SET id=?,value=? WHERE id=? AND owner=?', data.id, JSON.stringify({ ...queued, id: data.id, revision: data.revision, state: 'pending', message: undefined }), id, owner);
     }
   }));
+  if (choice === 'remote' && (queued.kind === 'profile' || queued.kind === 'plan')) await hydrate(owner);
 }
 export async function save(owner: string, kind: WriteKind, payload: unknown, id = randomUUID()): Promise<string> {
   return serial(async () => {
@@ -143,11 +153,25 @@ async function syncPending(owner: string) {
   await drain(owner, writes, async w => {
     acknowledged = undefined;
     if (!isCurrent()) return 'unauthorized';
+    const planState = await serial(async () => {
+      await assertOwner(db, owner);
+      const pending = await db.getFirstAsync<{ value: string }>('SELECT value FROM pending WHERE id=? AND owner=?', w.id, owner);
+      return pending?.value === JSON.stringify(w) ? workoutPlanState(db, w) : 'waiting';
+    });
+    if (planState === 'waiting') return 'deferred';
+    if (planState === 'local-only') return 'unpublished-plan';
+    if (!isCurrent()) return 'unauthorized';
+    const binding = w.kind === 'profile' && (w.payload as { planBinding?: boolean } | null)?.planBinding === true;
+    const args = {
+      kind: binding ? 'profile_plan' : w.kind,
+      record_id: w.id, expected_revision: w.revision,
+      payload: (binding ? { profile: w.payload, replacement: w.replacement ?? null } : w.payload) as Json,
+    };
     const controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), 15_000);
     let response;
     try {
-      response = await client.rpc('save_record', { kind: w.kind, record_id: w.id, expected_revision: w.revision, payload: w.payload as Json }).abortSignal(controller.signal);
+      response = await client.rpc('save_record', args).abortSignal(controller.signal);
     } finally { clearTimeout(deadline); }
     if (!isCurrent()) return 'unauthorized';
     const { data, error } = response;
@@ -236,4 +260,14 @@ export async function markDeletion(owner: string) {
 }
 export async function clearDeletion(owner: string) {
   await serial(async () => { await (await database()).runAsync('DELETE FROM deletion WHERE owner=?', owner); });
+}
+
+export async function signOutStatus() {
+  return (await database()).getFirstAsync<{ owner: string }>('SELECT owner FROM sign_out WHERE singleton=1');
+}
+export async function beginSignOut(owner: string) {
+  await serial(async () => markSignOut(await database(), owner));
+}
+export async function clearSignOut(owner: string) {
+  await serial(async () => { await (await database()).runAsync('DELETE FROM sign_out WHERE owner=?', owner); });
 }

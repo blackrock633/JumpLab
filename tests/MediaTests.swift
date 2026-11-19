@@ -2,9 +2,12 @@ import Foundation
 import AVFoundation
 
 @main struct MediaTests {
-  static func reject(_ label: String, _ work: () async throws -> Void) async {
+  static func reject(_ label: String, contains reason: String? = nil, _ work: () async throws -> Void) async {
     do { try await work(); fatalError("Expected rejection: \(label)") }
-    catch { print("PASS media rejection: \(label)") }
+    catch {
+      if let reason { precondition(error.localizedDescription.contains(reason), "Unexpected rejection for \(label): \(error.localizedDescription)") }
+      print("PASS media rejection: \(label)")
+    }
   }
   static func main() async throws {
     func mapping(source: Int64, target: Int64, length: Int64, targetLength: Int64? = nil) -> CMTimeMapping {
@@ -37,32 +40,27 @@ import AVFoundation
     }
     var camera = CameraEvidence()
     try camera.check(background()); try camera.check(background())
-    await reject("vertical camera displacement") { try camera.check(background(shift: 8)) }
+    await reject("vertical camera displacement", contains: "fixed camera") { try camera.check(background(shift: 8)) }
     var blank = CameraEvidence()
-    await reject("camera evidence unavailable on flat background") { try blank.check(background(flat: true)) }
+    await reject("camera evidence unavailable on flat background", contains: "textured") { try blank.check(background(flat: true)) }
     let cancellation = AnalysisCancellation()
     try cancellation.check()
     cancellation.cancel()
-    await reject("cancel/interruption flag") { try cancellation.check() }
+    await reject("cancel/interruption flag", contains: "cancelled") { try cancellation.check() }
     try AnalysisCancellation().check()
     let dir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".cache/native-media")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: dir) }
     let analyzer = VideoAnalyzer(), missing = dir.appendingPathComponent("missing.mov")
-    await reject("unavailable picker copy") { _ = try await analyzer.inspect(missing) }
+    await reject("unavailable picker copy", contains: "Import again") { _ = try await analyzer.inspect(missing) }
     let large = dir.appendingPathComponent("large.mov")
     _ = FileManager.default.createFile(atPath: large.path, contents: Data())
     let handle = try FileHandle(forWritingTo: large); try handle.truncate(atOffset: 250_000_001); try handle.close()
-    await reject("oversized media") { _ = try await analyzer.inspect(large) }
+    await reject("oversized media", contains: "250 MB") { _ = try await analyzer.inspect(large) }
     let cancelled = dir.appendingPathComponent("cancelled.mov")
     try Data("not a movie".utf8).write(to: cancelled)
-    await reject("pre-cancelled run does not reset cancellation") {
-      do {
-        _ = try await analyzer.run(cancelled, fps: 60, type: "standing", deleteAfter: true, cancellation: cancellation)
-      } catch {
-        precondition(error.localizedDescription.contains("cancelled"), "Cancellation must be observed before decoding")
-        throw error
-      }
+    await reject("pre-cancelled run does not reset cancellation", contains: "cancelled") {
+      _ = try await analyzer.run(cancelled, fps: 60, type: "standing", deleteAfter: true, cancellation: cancellation)
     }
     precondition(!FileManager.default.fileExists(atPath: cancelled.path))
     let broken = dir.appendingPathComponent("broken.mov")

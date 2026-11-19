@@ -42,6 +42,7 @@ npm run test:native
 npm run test:ui
 npm run test:integration
 npm run test:security
+npm run check:database-types
 npm run evaluate:video
 npm run check:dependencies
 npm run check:secrets

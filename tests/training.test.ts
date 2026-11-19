@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { adapt, completedPrescription, futureProfile, generate, kg, validateLog, validateProfile, type Profile, type Feedback } from '../src/core/training.ts';
+import { adapt, canPrepareNextWeek, completedPrescription, futureProfile, generate, kg, validateLog, validateProfile, type Profile, type Feedback } from '../src/core/training.ts';
 export const profile: Profile = { goal: 'standing', experience: 'new', days: [1, 3, 5], practiceDays: [], startHour: 17, weeklyMinutes: 90, sessionMinutes: 40, equipment: 'none', weightKg: 70, displayUnits: 'kg', knownSquatKg: null, limitation: 'none', pain: false, startDate: '2026-11-16' };
 test('same normalized profile/rules produce identical complete prescriptions', () => {
   assert.deepEqual(generate(profile), generate({ ...profile, days: [5, 1, 3] }));
@@ -105,4 +105,19 @@ test('deload volume restoration requires fresh, complete and explicitly comforta
   const restored = adapt(plan, [{ ...good, id: 'deload' }], null, schedule);
   assert.equal(restored.plan.sessions[0]!.exercises[0]!.sets, 2);
   assert.deepEqual(restored.plan.usedObservationIds, ['deload']);
+});
+
+test('rollover preserves the final scheduled workout until it completes or its day ends', () => {
+  const sessions = [{ scheduledOn: '2026-11-16', id: 'earlier' }, { scheduledOn: '2026-11-18', id: 'final' }];
+  const logs = new Map<string, { completed: boolean }>();
+  const done = (session: typeof sessions[number]) => logs.get(session.id)?.completed === true;
+  const finalDay = new Date(2026, 10, 18, 9);
+  assert.equal(canPrepareNextWeek(sessions, done, finalDay), false);
+  logs.set('final', { completed: false });
+  assert.equal(canPrepareNextWeek(sessions, done, finalDay), false);
+  logs.set('final', { completed: true });
+  assert.equal(canPrepareNextWeek(sessions, done, finalDay), true);
+  assert.equal(canPrepareNextWeek(sessions, done, new Date(2026, 10, 17, 23)), false);
+  logs.delete('final');
+  assert.equal(canPrepareNextWeek(sessions, done, new Date(2026, 10, 19, 0)), true);
 });

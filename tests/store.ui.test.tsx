@@ -49,3 +49,50 @@ test('a stalled profile refresh leaves local workout saves responsive and protec
   expect(await store.records('B', 'workout')).toEqual([]);
   expect(await store.pending('B')).toEqual([]);
 });
+
+test.each(['remote', 'local'] as const)('conflicting profile and plan stay together when keeping the %s version', async choice => {
+  await store.eraseLocalAccount('A');
+  await store.switchAccount('A', true);
+  const localProfile = { equipment: 'barbell', limitation: 'none' };
+  const localPlan = { sessions: [{ prescriptionId: 'draft-prescription' }] };
+  const remoteProfile = { equipment: 'none', limitation: 'no-impact', planBinding: true };
+  const date = new Date().toISOString();
+  const profileRow = { id: 'A', user_id: 'A', revision: 2, data: remoteProfile, created_at: date };
+  const remotePlan = { id: 'saved-plan', user_id: 'A', revision: 1, data: { profileRevision: 2 }, created_at: date };
+  const rpc = jest.fn((_name, args) => ({ abortSignal: async () => ({
+    error: null, data: args.expected_revision === 2 || args.kind !== 'profile_plan' ? { revision: 3 } : { code: '40001' },
+  }) }));
+  const from = (table: string) => {
+    const request = { select: () => request, eq: () => request, order: () => request, limit: () => request, gte: () => request,
+      maybeSingle: async () => ({ error: null, data: profileRow }),
+      abortSignal: async () => ({ error: null, data: table === 'profiles' ? [profileRow] : table === 'plans' ? [remotePlan] : [] }) };
+    return request;
+  };
+  jest.mocked(accountClient).mockResolvedValue({ client: { from, rpc }, isCurrent: () => true } as never);
+  await store.saveBatch('A', [{ id: 'A', kind: 'profile', payload: localProfile }, { id: 'draft', kind: 'plan', payload: localPlan }]);
+  await store.save('A', 'workout', { prescriptionId: 'draft-prescription' }, 'local-log');
+  await store.sync('A');
+  expect(rpc).toHaveBeenCalledTimes(1);
+  expect(rpc).toHaveBeenCalledWith('save_record', expect.objectContaining({ kind: 'profile_plan',
+    payload: { profile: { ...localProfile, planBinding: true }, replacement: { id: 'draft', payload: localPlan } },
+  }));
+  expect(await store.pending('A')).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: 'A', state: 'conflict', replacement: { id: 'draft' } }),
+    expect.objectContaining({ id: 'local-log', state: 'pending' }),
+  ]));
+  await store.resolveConflict('A', 'A', choice);
+  await store.sync('A');
+  if (choice === 'remote') {
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(await store.records('A', 'profile')).toEqual([expect.objectContaining({ payload: remoteProfile })]);
+    expect(await store.records('A', 'plan')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'draft', revision: 0 }), expect.objectContaining({ id: 'saved-plan', revision: 1 }),
+    ]));
+    expect(await store.pending('A')).toEqual([expect.objectContaining({ id: 'local-log', state: 'error', message: expect.stringContaining('local history') })]);
+  } else {
+    expect(rpc).toHaveBeenNthCalledWith(2, 'save_record', expect.objectContaining({ kind: 'profile_plan', expected_revision: 2 }));
+    expect(rpc).toHaveBeenNthCalledWith(3, 'save_record', expect.objectContaining({ kind: 'workout', record_id: 'local-log' }));
+    expect(await store.records('A', 'plan')).toEqual([expect.objectContaining({ id: 'draft', revision: 1, payload: { ...localPlan, profileRevision: 3 } })]);
+    expect(await store.pending('A')).toEqual([]);
+  }
+});

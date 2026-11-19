@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { initialize, changeAccount, putLocal, putBatch, readPending, recentJumpRows, mergeRemote, reconcileWrite, type LocalDB } from '../src/data/local.ts';
+import { initialize, assertOwner, changeAccount, markSignOut, progressSeriesLimit, workoutPlanState, putLocal, putBatch, readPending, recentJumpRows, mergeRemote, reconcileWrite, type LocalDB } from '../src/data/local.ts';
 function adapter(file: string) {
   const raw = new DatabaseSync(file);
   const db: LocalDB = {
@@ -70,7 +70,7 @@ test('date-scoped chart cache retains older in-range records and omits full fram
   }
   await putLocal(db, 'A', 'jump', { createdAt: '2000-01-01T00:00:00Z', type: 'running' }, 'outdated');
   const rows = await recentJumpRows(db, 'A');
-  assert.equal(rows.length, 502);
+  assert.equal(rows.length, progressSeriesLimit + 1);
   assert.deepEqual(JSON.parse(rows.find(row => row.id === 'older')!.payload).timing, { originalFPS: 60 });
   close();
 });
@@ -88,6 +88,7 @@ test('replaying a stable analysis receipt after SQLite commit does not requeue s
 });
 
 test('native measurement UUID stays unique through save, acknowledge, hydrate and disk restart', async () => {
+  mkdirSync('.cache', { recursive: true });
   const folder = mkdtempSync('.cache/jump-'), file = folder + '/records.sqlite';
   const uppercase = 'AABBCCDD-AABB-CCDD-AABB-AABBCCDDEEFF', id = uppercase.toLowerCase();
   const createdAt = new Date().toISOString();
@@ -134,5 +135,59 @@ test('a slow acknowledgement and an older hydration snapshot preserve newer loca
   await mergeRemote(db, 'A', 'workout', [{ id: 'w', user_id: 'A', data: { reps: 3 }, revision: 1, created_at: new Date().toISOString() }]);
   const saved = await db.getFirstAsync("SELECT payload,revision FROM records WHERE id='w'");
   assert.deepEqual({ ...saved as object }, { payload: '{"reps":5}', revision: 2 });
+  close();
+});
+
+test('profile drafts and their prescriptions have one durable queue entry with atomic acknowledgement', async () => {
+  const { db, close } = adapter(':memory:');
+  await initialize(db); await changeAccount(db, 'A');
+  const draft = (id: string, equipment: string) => putBatch(db, 'A', [
+    { kind: 'profile', id: 'A', payload: { equipment } },
+    { kind: 'plan', id, payload: { sessions: [{ prescriptionId: id + '-prescription' }] } },
+  ]);
+  await draft('plan-one', 'barbell');
+  await putLocal(db, 'A', 'workout', { prescriptionId: 'plan-one-prescription' }, 'log');
+  const [sent, log] = await readPending(db, 'A', true);
+  assert.equal(sent!.replacement?.id, 'plan-one');
+  assert.equal(await workoutPlanState(db, log!), 'waiting');
+  await draft('plan-two', 'none');
+  await reconcileWrite(db, sent!, null, 1);
+  const [next, updatedLog] = await readPending(db, 'A', true);
+  assert.equal(next!.revision, 1);
+  assert.equal(next!.replacement?.id, 'plan-two');
+  assert.equal(await workoutPlanState(db, updatedLog!), 'ready');
+  assert.equal((await db.getFirstAsync<{ revision: number }>("SELECT revision FROM records WHERE id='plan-one'"))?.revision, 1);
+  await assert.rejects(putLocal(db, 'A', 'plan', { profileRevision: 1 }, 'standalone'), /Sync the current profile/);
+  close();
+});
+
+test('a confirmed erase stays locked across restart until the durable intent is cleared', async () => {
+  mkdirSync('.cache/tests', { recursive: true });
+  const folder = mkdtempSync('.cache/tests/signout-'), file = folder + '/records.sqlite';
+  let connection = adapter(file);
+  try {
+    await initialize(connection.db); await changeAccount(connection.db, 'A');
+    await putLocal(connection.db, 'A', 'workout', { sets: [5] }, 'private');
+    await markSignOut(connection.db, 'A');
+    connection.close(); connection = adapter(file); await initialize(connection.db);
+    await assert.rejects(assertOwner(connection.db, 'A'), /Account changed/);
+    await assert.rejects(putLocal(connection.db, 'A', 'workout', {}, 'new'), /Account changed/);
+    await changeAccount(connection.db, null); connection.close();
+    connection = adapter(file); await initialize(connection.db);
+    assert.equal((await connection.db.getFirstAsync<{ owner: string }>('SELECT owner FROM sign_out'))?.owner, 'A');
+    assert.deepEqual(await readPending(connection.db, 'A'), []);
+    assert.deepEqual(await connection.db.getAllAsync('SELECT id FROM records'), []);
+  } finally { connection.close(); rmSync(folder, { recursive: true }); }
+});
+
+test('legacy independent plan writes remain local for review after the queue upgrade', async () => {
+  const { db, close } = adapter(':memory:');
+  await initialize(db); await changeAccount(db, 'A');
+  await db.execAsync('PRAGMA user_version=1');
+  await db.runAsync('INSERT INTO pending(id,owner,value) VALUES(?,?,?)', 'legacy', 'A',
+    JSON.stringify({ id: 'legacy', owner: 'A', kind: 'plan', state: 'pending', payload: {} }));
+  await initialize(db);
+  assert.deepEqual(await readPending(db, 'A', true), []);
+  assert.match((await readPending(db, 'A'))[0]!.message!, /Edit your profile/);
   close();
 });

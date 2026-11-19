@@ -30,9 +30,12 @@ try {
     const setup = await request('/auth/v1/admin/users', setupKey, 'POST', { email, password, email_confirm: true }, true);
     if (!setup.ok || !setup.data?.id) throw Error('Test-account setup failed (details withheld to avoid credentials in logs).');
     created.push(setup.data.id);
-    const login = await request('/auth/v1/token?grant_type=password', key, 'POST', { email, password });
-    check(login.ok && login.data?.access_token, 'real client login');
-    return { id: setup.data.id, email, token: login.data.access_token, refresh: login.data.refresh_token };
+    async function signIn() {
+      const login = await request('/auth/v1/token?grant_type=password', key, 'POST', { email, password });
+      check(login.ok && login.data?.access_token, 'real client login');
+      return { token: login.data.access_token, refresh: login.data.refresh_token };
+    }
+    return { id: setup.data.id, email, signIn, ...await signIn() };
   }
   const a = await account(), b = await account();
   // The setup credential inventories the running PostgREST schema only. All
@@ -42,12 +45,12 @@ try {
   const tables = paths.filter(path => /^\/[a-z_]+$/.test(path)).map(path => path.slice(1)).sort();
   check(discovery.ok && JSON.stringify(tables) === JSON.stringify(['adaptations','jump_history','jump_results','plans','prescriptions','profiles','workouts']), 'applied exposed relations match the security inventory');
   check(JSON.stringify(paths.filter(path => path.startsWith('/rpc/')).sort()) === JSON.stringify(['/rpc/active_account','/rpc/delete_account','/rpc/save_record']), 'applied exposed RPCs match the security inventory');
-  const pId = randomUUID();
-  check((await rpc(a.token, 'profile', pId, profile)).data === 1, 'save owned profile');
+  const pId = a.id;
+  check((await rpc(a.token, 'profile', b.id, profile)).data === 1, 'forged profile key is disregarded on first publication');
   const forged = { ...profile, weightKg: 71, user_id: b.id };
   check((await rpc(a.token, 'profile', pId, forged, 1)).data === 2, 'forged JSON owner disregarded');
   const owned = await request('/rest/v1/profiles?select=id,user_id,revision,data', a.token);
-  check(owned.ok && owned.data.length === 1 && owned.data[0].user_id === a.id, 'ownership derives from JWT');
+  check(owned.ok && owned.data.length === 1 && owned.data[0].user_id === a.id && owned.data[0].id === a.id, 'ownership derives from JWT');
   const duplicate = await Promise.all(Array.from({ length: 8 }, () => rpc(a.token, 'profile', pId, forged, 1)));
   check(duplicate.every(r => r.ok && r.data === 2), 'concurrent lost-ack retries are idempotent');
   check(!(await rpc(a.token, 'profile', pId, { ...profile, weightKg: 75 }, 0)).ok, 'stale edits conflict');
@@ -57,9 +60,45 @@ try {
   }
   check(!(await rpc(a.token, 'workout', randomUUID(), { prescriptionId: randomUUID(), sets: [] })).ok, 'unprescribed workout rejected');
   check(!(await rpc(key, 'profile', randomUUID(), profile)).ok, 'anonymous RPC denied');
-  const bProfile = randomUUID(); check((await rpc(b.token, 'profile', bProfile, profile)).ok, 'populate B profile');
-  async function seedAll(token) {
-    const planId = randomUUID(), plan = { ...generate(profile), changeReason: 'Isolated test fixture', sessions: generate(profile).sessions.map(s => ({ ...s, prescriptionId: randomUUID(), workoutId: randomUUID() })) };
+  check((await rpc(b.token, 'profile', b.id, profile)).ok, 'real owner can still create its profile after the forged key');
+  const savedB = await request('/rest/v1/profiles?select=id,user_id', b.token);
+  check(savedB.ok && savedB.data.length === 1 && savedB.data[0].id === b.id, 'B retains its canonical profile key');
+  const buildPlan = (answers, profileRevision) => {
+    const generated = generate(answers);
+    return { ...generated, profileRevision, changeReason: 'Isolated test fixture', sessions: generated.sessions.map(s => ({
+      ...s, prescriptionId: randomUUID(), workoutId: randomUUID(),
+    })) };
+  };
+  const change = { ...profile, equipment: 'none', limitation: 'no-impact' };
+  const acceptedPlan = { id: randomUUID(), payload: buildPlan(change, 3) };
+  const pair = { profile: change, replacement: acceptedPlan };
+  const secondClient = await a.signIn();
+  check((await rpc(a.token, 'profile_plan', pId, pair, 2)).data === 3, 'publish profile and its replacement plan atomically');
+  const pairRetries = await Promise.all(Array.from({ length: 3 }, () => rpc(a.token, 'profile_plan', pId, pair, 2)));
+  check(pairRetries.every(result => result.ok && result.data === 3), 'concurrent retries of an atomic publication reuse its revision');
+  const stale = { ...profile, equipment: 'barbell' };
+  const stalePlan = { id: randomUUID(), payload: buildPlan(stale, 3) };
+  const conflict = await rpc(secondClient.token, 'profile_plan', pId, { profile: stale, replacement: stalePlan }, 2);
+  check(!conflict.ok && conflict.data?.code === '40001', 'the second client’s stale profile and replacement plan conflict');
+  const independentlyStale = await rpc(a.token, 'plan', stalePlan.id, { ...stalePlan.payload, profileRevision: 2 });
+  check(!independentlyStale.ok && independentlyStale.data?.code === '40001', 'an older profile revision cannot publish a standalone plan');
+  const forgedBasis = await rpc(a.token, 'plan', stalePlan.id, stalePlan.payload);
+  check(!forgedBasis.ok && forgedBasis.data?.code === '22023', 'an incompatible plan is rejected even with the current profile revision');
+  const invalidPair = await rpc(a.token, 'profile_plan', pId, {
+    profile: stale, replacement: { id: randomUUID(), payload: { ...stalePlan.payload, sessions: [] } },
+  }, 3);
+  check(!invalidPair.ok && invalidPair.data?.code === '22023', 'an invalid replacement rolls back the profile update');
+  const [keptProfile, keptPlans] = await Promise.all([
+    request('/rest/v1/profiles?select=id,revision,data', a.token),
+    request('/rest/v1/plans?select=id,data', a.token),
+  ]);
+  check(keptProfile.ok && keptProfile.data[0].revision === 3 && keptProfile.data[0].data.limitation === 'no-impact',
+    'failed proposals leave the accepted profile intact');
+  check(keptPlans.ok && keptPlans.data.length === 1 && keptPlans.data[0].id === acceptedPlan.id &&
+    keptPlans.data[0].data.profileRevision === 3 && keptPlans.data[0].data.sessions.every(s => s.exercises.every(e => e.id !== 'jump')),
+    'the saved plan stays linked to the accepted equipment and impact constraints');
+  async function seedAll(token, answers, profileRevision) {
+    const planId = randomUUID(), plan = buildPlan(answers, profileRevision);
     check((await rpc(token, 'plan', planId, plan)).ok, 'populate plan, prescriptions and adaptation');
     for (const invalid of [
       { ...plan.sessions[0], scheduledOn: '2026-02-31' },
@@ -85,12 +124,23 @@ try {
       const bad = await rpc(token, 'jump', id, { ...jump, createdAt });
       check(!bad.ok && bad.data?.code === '22023', 'unusable analysis timestamp rejected before idempotency check');
     }
+    for (const value of [
+      { ...workout, updatedAt: 'infinity' }, { ...workout, updatedAt: '2026-02-31T12:00:00Z' },
+      { ...workout, updatedAt: '2026-11-18T12:00:00+01:00' }, { ...workout, completedAt: '-infinity' },
+      { ...workout, completedAt: '1900-01-01T00:00:00Z' }, { ...workout, completedAt: null },
+      { ...workout, completed: false, completedAt: 10 }, { ...workout, completed: false, completedAt: workout.completedAt },
+    ]) {
+      const bad = await rpc(token, 'workout', s.workoutId, value, 1);
+      check(!bad.ok && bad.data?.code === '22023', 'reject a malformed or inconsistent workout timestamp');
+    }
+    const incomplete = { ...workout, completed: false, completedAt: null };
+    check((await rpc(token, 'workout', s.workoutId, incomplete, 1)).data === 2, 'incomplete workout accepts an explicit null completion timestamp');
     const badWorkout = await rpc(token, 'workout', s.workoutId, { ...workout, sets: [{ exerciseId: 'outside', index: 0, reps: 1, loadKg: null, done: true }] });
     check(!badWorkout.ok && badWorkout.data?.code === '22023', 'unrelated exercise rejected');
     return { plan, jump, workout, planId };
   }
-  const aData = await seedAll(a.token);
-  await seedAll(b.token);
+  const aData = await seedAll(a.token, change, 3);
+  await seedAll(b.token, profile, 1);
   const forgedWorkout = await rpc(b.token, 'workout', aData.plan.sessions[0].workoutId, aData.workout);
   check(!forgedWorkout.ok && forgedWorkout.data?.code === '22023', 'cross-account prescription rejected by the mutation RPC');
   check(!(await rpc(b.token, 'jump', aData.jump.id, aData.jump)).ok, 'cross-account duplicate measurement rejected');
@@ -111,7 +161,7 @@ try {
       }
     }
   }
-  for (const functionName of ['limit_write', 'typed_fields', 'valid_jump']) check(!(await request(`/rest/v1/rpc/${functionName}`, a.token, 'POST', {})).ok, `private function ${functionName} unavailable`);
+  for (const functionName of ['limit_write', 'typed_fields', 'valid_jump', 'valid_workout_timestamp', 'check_plan_profile', 'write_record', 'write_record_legacy']) check(!(await request(`/rest/v1/rpc/${functionName}`, a.token, 'POST', {})).ok, `private function ${functionName} unavailable`);
   // A fresh test identity isolates this burst from setup writes. Keep it inside
   // one window so a true reset cannot appear to be a concurrency overshoot.
   const quotaAccount = await account();

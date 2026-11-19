@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregate, matchEvents, validateFixtures } from '../scripts/evaluation.mjs';
+import { aggregate, matchEvents, missingEvaluationCoverage, validateFixtures } from '../scripts/evaluation.mjs';
 test('fixtures validate reference identity/uncertainty and complete events', () => {
   validateFixtures({ version: 1, clips: [] });
   assert.throws(() => validateFixtures({ clips: [] }));
@@ -24,4 +24,23 @@ test('matching preserves event order and does not lose neighbors to a greedy nea
   const make = (takeoffSeconds: number) => ({ takeoffSeconds, landingSeconds: takeoffSeconds + 0.3 });
   const result = matchEvents([make(1.19), make(1.4)], [make(1), make(1.2)]);
   assert.equal(result.matched, 2); assert.equal(result.missed, 0); assert.equal(result.falseDetections, 0);
+});
+
+test('rejection-only coverage cannot pass and repeated coverage requires multiple matched events', () => {
+  const row = (type: string, category: string, matched = 0) => ({
+    type, category, expected: matched ? 'accept' : 'reject', outcome: matched ? 'accept' : 'reject',
+    referenceEvents: matched, match: { matched },
+  });
+  const rejected = [
+    row('standing', 'original-cfr'), row('running', 'original-vfr'), row('repeated', 'slow-motion'),
+    row('repeated', 'exported'), row('standing', 'failure'),
+  ];
+  assert.deepEqual(missingEvaluationCoverage(rejected), [
+    'accepted-standing', 'accepted-running', 'accepted-repeated', 'repeated-multiple-events',
+    'original-cfr', 'original-vfr', 'matched-reference-events',
+  ]);
+  const accepted = [row('standing', 'original-cfr', 1), row('running', 'original-vfr', 1), row('repeated', 'original-cfr', 1)];
+  assert.deepEqual(missingEvaluationCoverage([...rejected, ...accepted]), ['repeated-multiple-events']);
+  assert.deepEqual(missingEvaluationCoverage([...rejected, ...accepted, row('repeated', 'original-vfr', 2)]), []);
+  assert.ok(missingEvaluationCoverage([...rejected, { ...accepted[0], match: { matched: 0 } }]).includes('accepted-standing'));
 });

@@ -43,7 +43,8 @@ test('low FPS broadens uncertainty, summaries and comparisons keep types/methods
   assert.ok(low.airtimeRange[1] - low.airtimeRange[0] > high.airtimeRange[1] - high.airtimeRange[0]);
   assert.equal(compatible([low, { ...high, type: 'running' }], 'repeated').length, 1);
   assert.equal(compatible([low], 'repeated', 'other' as typeof METHOD).length, 0);
-  assert.equal(summary([]), null); assert.equal(summary([low, high])?.count, 2);
+  assert.equal(summary([]), null);
+  assert.deepEqual(summary([low, high]), { count: 2, meanM: (low.heightM + high.heightM) / 2, bestM: Math.max(low.heightM, high.heightM) });
 });
 test('wide transition evidence cannot become a saved estimate', () => {
   const t = timing(24, 0);

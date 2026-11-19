@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir, realpath } from 'node:fs/promises';
 import { resolve, dirname, relative, isAbsolute, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { aggregate, matchEvents, validateFixtures } from './evaluation.mjs';
+import { aggregate, matchEvents, missingEvaluationCoverage, validateFixtures } from './evaluation.mjs';
 import { acceptedMeasurements, METHOD } from '../src/core/measurement.ts';
 const manifestPath = resolve(process.argv[2] ?? 'fixtures/manifest.json');
 try {
@@ -39,7 +39,7 @@ try {
     }
     rows.push({ id: c.id, type: c.jumpType, category: c.category, reference: c.reference, referenceEvents: c.expected.events.length, expected: c.expected.outcome, outcome: actual.outcome, match: matchEvents(detected, c.expected.events), actual });
   }
-  const missingCoverage = ['standing', 'running', 'repeated', 'original-cfr', 'original-vfr', 'slow-motion', 'exported', 'failure'].filter(k => !rows.some(r => r.type === k || r.category === k));
+  const missingCoverage = missingEvaluationCoverage(rows);
   const report = { status: 'observed-sample-only; no accuracy threshold or device validation implied', evaluatedAt: new Date().toISOString(), matcherToleranceSeconds: 0.25, missingCoverage, aggregate: aggregate(rows), categories: Object.fromEntries([...new Set(rows.map(r => `${r.type}/${r.category}`))].map(k => [k, aggregate(rows.filter(r => `${r.type}/${r.category}` === k))])), rows };
   const output = resolve(process.argv[3] ?? '.cache/video-evaluation.json');
   await writeFile(output, JSON.stringify(report, null, 2)); console.log(`Observed ${rows.length} real clips. Report: ${output}`);

@@ -1,15 +1,32 @@
-// Schema-derived contract. Regenerate with `supabase gen types typescript --local`;
-// a generated-output comparison remains required against a running database.
+// Provisional schema contract. Replace with output from
+// `supabase gen types typescript --local --schema public` after a local reset.
+// RPC-only mutation grants are enforced by Postgres independently of these types.
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 type Row = { id: string; user_id: string; revision: number; data: Json; created_at: string; updated_at: string };
-type ReadTable<R> = { Row: R; Insert: never; Update: never; Relationships: [] };
+type Table<R, D extends keyof R, Relationships extends readonly unknown[] = []> = {
+  Row: R; Insert: Omit<R, D> & Partial<Pick<R, D>>; Update: Partial<R>; Relationships: Relationships;
+};
+type Defaults = 'user_id' | 'created_at' | 'updated_at';
+type PlanRelationship<Name extends string> = {
+  foreignKeyName: Name; columns: ['plan_id', 'user_id']; isOneToOne: false;
+  referencedRelation: 'plans'; referencedColumns: ['id', 'user_id'];
+};
 export type Database = {
   public: {
     Tables: {
-      profiles: ReadTable<Row>; plans: ReadTable<Row>; jump_results: ReadTable<Row>;
-      workouts: ReadTable<Row & { prescription_id: string }>;
-      prescriptions: ReadTable<{ id: string; user_id: string; plan_id: string; data: Json }>;
-      adaptations: ReadTable<{ id: string; user_id: string; plan_id: string; data: Json; created_at: string }>;
+      profiles: Table<Row, Defaults>;
+      plans: Table<Row, Defaults>;
+      jump_results: Table<Row, Defaults>;
+      workouts: Table<Row & { prescription_id: string }, Defaults, [{
+        foreignKeyName: 'workouts_prescription_id_user_id_fkey'; columns: ['prescription_id', 'user_id'];
+        isOneToOne: true; referencedRelation: 'prescriptions'; referencedColumns: ['id', 'user_id'];
+      }]>;
+      prescriptions: Table<{ id: string; user_id: string; plan_id: string; data: Json }, 'user_id', [
+        PlanRelationship<'prescriptions_plan_id_user_id_fkey'>,
+      ]>;
+      adaptations: Table<{ id: string; user_id: string; plan_id: string; data: Json; created_at: string }, 'user_id' | 'created_at', [
+        PlanRelationship<'adaptations_plan_id_user_id_fkey'>,
+      ]>;
     };
     Views: {
       jump_history: { Row: { id: string | null; user_id: string | null; revision: number | null; data: Json | null; created_at: string | null }; Relationships: [] };

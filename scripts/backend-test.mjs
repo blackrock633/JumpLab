@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { generate } from '../src/core/training.ts';
+import { adapt, generate } from '../src/core/training.ts';
 import { measurement } from '../src/core/measurement.ts';
+import { feasibleProfiles, good, infeasibleProfiles } from '../tests/fixtures/profiles.ts';
 const base = process.env.JUMPLAB_TEST_URL;
 const key = process.env.JUMPLAB_TEST_PUBLIC_KEY;
 const setupKey = process.env.JUMPLAB_TEST_SETUP_KEY;
@@ -24,6 +25,11 @@ const created = [];
 let assertions = 0;
 function check(value, name) { assert.ok(value, name); assertions++; console.log(`PASS ${name}`); }
 const profile = { goal: 'standing', experience: 'new', days: [1, 3], practiceDays: [], startHour: 17, weeklyMinutes: 60, sessionMinutes: 30, equipment: 'none', weightKg: 70, displayUnits: 'kg', knownSquatKg: null, limitation: 'none', pain: false, startDate: '2026-11-16' };
+function buildPlan(plan, profileRevision, changeReason = 'Isolated test fixture') {
+  return { ...plan, profileRevision, changeReason, sessions: plan.sessions.map(s => ({
+    ...s, prescriptionId: randomUUID(), workoutId: randomUUID(),
+  })) };
+}
 try {
   async function account() {
     const email = `jumplab-${randomUUID()}@example.test`, password = `${randomUUID()}Aa9!`;
@@ -60,24 +66,18 @@ try {
   }
   check(!(await rpc(a.token, 'workout', randomUUID(), { prescriptionId: randomUUID(), sets: [] })).ok, 'unprescribed workout rejected');
   check(!(await rpc(key, 'profile', randomUUID(), profile)).ok, 'anonymous RPC denied');
-  check((await rpc(b.token, 'profile', b.id, profile)).ok, 'real owner can still create its profile after the forged key');
+  check((await rpc(b.token, 'profile', b.id, profile)).data === 1, 'real owner can still create its first profile revision after the forged key');
   const savedB = await request('/rest/v1/profiles?select=id,user_id', b.token);
   check(savedB.ok && savedB.data.length === 1 && savedB.data[0].id === b.id, 'B retains its canonical profile key');
-  const buildPlan = (answers, profileRevision) => {
-    const generated = generate(answers);
-    return { ...generated, profileRevision, changeReason: 'Isolated test fixture', sessions: generated.sessions.map(s => ({
-      ...s, prescriptionId: randomUUID(), workoutId: randomUUID(),
-    })) };
-  };
   const change = { ...profile, equipment: 'none', limitation: 'no-impact' };
-  const acceptedPlan = { id: randomUUID(), payload: buildPlan(change, 3) };
+  const acceptedPlan = { id: randomUUID(), payload: buildPlan(generate(change)) };
   const pair = { profile: change, replacement: acceptedPlan };
   const secondClient = await a.signIn();
   check((await rpc(a.token, 'profile_plan', pId, pair, 2)).data === 3, 'publish profile and its replacement plan atomically');
   const pairRetries = await Promise.all(Array.from({ length: 3 }, () => rpc(a.token, 'profile_plan', pId, pair, 2)));
   check(pairRetries.every(result => result.ok && result.data === 3), 'concurrent retries of an atomic publication reuse its revision');
   const stale = { ...profile, equipment: 'barbell' };
-  const stalePlan = { id: randomUUID(), payload: buildPlan(stale, 3) };
+  const stalePlan = { id: randomUUID(), payload: buildPlan(generate(stale), 3) };
   const conflict = await rpc(secondClient.token, 'profile_plan', pId, { profile: stale, replacement: stalePlan }, 2);
   check(!conflict.ok && conflict.data?.code === '40001', 'the second client’s stale profile and replacement plan conflict');
   const independentlyStale = await rpc(a.token, 'plan', stalePlan.id, { ...stalePlan.payload, profileRevision: 2 });
@@ -98,7 +98,7 @@ try {
     keptPlans.data[0].data.profileRevision === 3 && keptPlans.data[0].data.sessions.every(s => s.exercises.every(e => e.id !== 'jump')),
     'the saved plan stays linked to the accepted equipment and impact constraints');
   async function seedAll(token, answers, profileRevision) {
-    const planId = randomUUID(), plan = buildPlan(answers, profileRevision);
+    const planId = randomUUID(), plan = buildPlan(generate(answers), profileRevision);
     check((await rpc(token, 'plan', planId, plan)).ok, 'populate plan, prescriptions and adaptation');
     for (const invalid of [
       { ...plan.sessions[0], scheduledOn: '2026-02-31' },
@@ -124,14 +124,23 @@ try {
       const bad = await rpc(token, 'jump', id, { ...jump, createdAt });
       check(!bad.ok && bad.data?.code === '22023', 'unusable analysis timestamp rejected before idempotency check');
     }
-    for (const value of [
-      { ...workout, updatedAt: 'infinity' }, { ...workout, updatedAt: '2026-02-31T12:00:00Z' },
-      { ...workout, updatedAt: '2026-11-18T12:00:00+01:00' }, { ...workout, completedAt: '-infinity' },
-      { ...workout, completedAt: '1900-01-01T00:00:00Z' }, { ...workout, completedAt: null },
-      { ...workout, completed: false, completedAt: 10 }, { ...workout, completed: false, completedAt: workout.completedAt },
+    for (const [label, fields] of [
+      ['infinity', { updatedAt: 'infinity' }],
+      ['negative infinity', { completedAt: '-infinity' }],
+      ['impossible date', { updatedAt: '2026-02-30T12:00:00Z' }],
+      ['day outside month', { updatedAt: '2026-02-31T12:00:00Z' }],
+      ['non-UTC offset', { updatedAt: '2026-11-18T12:00:00+01:00' }],
+      ['loose format', { updatedAt: '2026-11-18 12:00:00Z' }],
+      ['before 2000', { completedAt: '1999-12-31T23:59:59.999Z' }],
+      ['old date', { completedAt: '1900-01-01T00:00:00Z' }],
+      ['over a day in the future', { updatedAt: new Date(Date.now() + 2 * 86400000).toISOString() }],
+      ['completed with null', { completedAt: null }],
+      ['completed with a number', { completedAt: 10 }],
+      ['incomplete with a number', { completed: false, completedAt: 10 }],
+      ['incomplete with a string', { completed: false, completedAt: workout.completedAt }],
     ]) {
-      const bad = await rpc(token, 'workout', s.workoutId, value, 1);
-      check(!bad.ok && bad.data?.code === '22023', 'reject a malformed or inconsistent workout timestamp');
+      const bad = await rpc(token, 'workout', s.workoutId, { ...workout, ...fields }, 1);
+      check(!bad.ok && bad.data?.code === '22023', `reject workout timestamp: ${label}`);
     }
     const incomplete = { ...workout, completed: false, completedAt: null };
     check((await rpc(token, 'workout', s.workoutId, incomplete, 1)).data === 2, 'incomplete workout accepts an explicit null completion timestamp');
@@ -162,11 +171,95 @@ try {
     }
   }
   for (const functionName of ['limit_write', 'typed_fields', 'valid_jump', 'valid_workout_timestamp', 'check_plan_profile', 'write_record', 'write_record_legacy']) check(!(await request(`/rest/v1/rpc/${functionName}`, a.token, 'POST', {})).ok, `private function ${functionName} unavailable`);
+  for (const answers of infeasibleProfiles) assert.throws(() => generate(answers), 'infeasible scenario produces no plan to publish');
+  const parity = await account();
+  let profileRevision = 0;
+  for (const [name, answers] of Object.entries(feasibleProfiles)) {
+    const generated = generate(answers);
+    const published = await rpc(parity.token, 'profile_plan', parity.id, {
+      profile: answers, replacement: { id: randomUUID(), payload: buildPlan(generated) },
+    }, profileRevision);
+    check(published.ok && published.data === profileRevision + 1, `${name}: generated plan accepted with its profile`);
+    profileRevision = published.data;
+    let prior = generated;
+    for (const [variant, feedback, reason] of [
+      ['hold', [], /^Hold:/],
+      ['increase', [good, good, good], /^Three comfortable/],
+      ['deload', [], /^Planned deload:/],
+    ]) {
+      const next = adapt(prior, feedback, null);
+      assert.match(next.reason, reason, `${name}: adaptation exercises the ${variant} rule`);
+      const payload = buildPlan(next.plan, profileRevision, next.reason);
+      const planId = randomUUID();
+      const rollover = await rpc(parity.token, 'plan', planId, payload);
+      check(rollover.ok && rollover.data === 1, `${name}: ${variant} rollover accepted for the saved profile revision`);
+      prior = next.plan;
+      if (name === 'progression' && variant === 'deload') {
+        const updated = { ...answers, weightKg: 71 };
+        check((await rpc(parity.token, 'profile_plan', parity.id, {
+          profile: updated, replacement: { id: randomUUID(), payload: buildPlan(generate(updated)) },
+        }, profileRevision)).data === profileRevision + 1, 'publish a newer profile before retrying the old rollover');
+        profileRevision++;
+        check((await rpc(parity.token, 'plan', planId, payload)).data === 1, 'exact rollover replay survives a newer profile revision');
+      }
+    }
+  }
+
+  for (const [label, answers, tamper] of [
+    ['practice-adjacent date', { ...feasibleProfiles.practice, days: [0, 1, 3, 5] }, plan => {
+      Object.assign(plan.sessions[0], { day: 0, scheduledOn: '2026-11-22' });
+    }],
+    ['impact exercise under no-impact', feasibleProfiles.noImpact, plan => {
+      plan.sessions[0].exercises.push(generate(feasibleProfiles.base).sessions[0].exercises.find(e => e.id === 'jump'));
+    }],
+    ['load without equipment', feasibleProfiles.base, plan => { plan.sessions[0].exercises[0].loadKg = 10; }],
+    ['weekly minutes over budget', feasibleProfiles.oneSession, plan => {
+      plan.sessions = buildPlan(generate(feasibleProfiles.base), 1).sessions;
+    }],
+  ]) {
+    const client = await account();
+    const generated = generate(answers);
+    check((await rpc(client.token, 'profile_plan', client.id, {
+      profile: answers, replacement: { id: randomUUID(), payload: buildPlan(generated) },
+    })).data === 1, `${label}: untampered control accepted`);
+    const payload = buildPlan(generated, 1);
+    tamper(payload);
+    const invalid = await rpc(client.token, 'plan', randomUUID(), payload);
+    check(!invalid.ok && invalid.data?.code === '22023', `plan-profile mismatch rejected: ${label}`);
+  }
+
+  const rollback = await account();
+  await waitForQuotaWindow();
+  const rollbackBucket = Math.floor(Date.now() / 60000);
+  check((await rpc(rollback.token, 'profile', rollback.id, profile)).data === 1, 'rollback account starts with saved profile revision 1');
+  const rollbackId = randomUUID();
+  const invalidReplacement = {
+    profile: change, replacement: { id: rollbackId, payload: buildPlan(generate(profile)) },
+  };
+  const rejectedPair = await rpc(rollback.token, 'profile_plan', rollback.id, invalidReplacement, 1);
+  check(!rejectedPair.ok && rejectedPair.data?.code === '22023', 'paired publication rejects a structurally valid replacement containing forbidden impact');
+  const [before, plansAfter, prescriptionsAfter] = await Promise.all([
+    request('/rest/v1/profiles?select=revision,data', rollback.token),
+    request(`/rest/v1/plans?select=id&id=eq.${rollbackId}`, rollback.token),
+    request(`/rest/v1/prescriptions?select=id&plan_id=eq.${rollbackId}`, rollback.token),
+  ]);
+  check(before.ok && before.data.length === 1 && before.data[0].revision === 1 &&
+    before.data[0].data.limitation === profile.limitation, 'paired rollback preserves original profile revision and limitation');
+  check(plansAfter.ok && plansAfter.data.length === 0, 'paired rollback leaves no replacement plan');
+  check(prescriptionsAfter.ok && prescriptionsAfter.data.length === 0, 'paired rollback leaves no replacement prescriptions');
+  const rollbackQuota = await Promise.all(Array.from({ length: 59 }, () => rpc(rollback.token, 'plan', randomUUID(), {})));
+  check(Math.floor(Date.now() / 60000) === rollbackBucket, 'paired rollback quota probe stayed in one window');
+  check(rollbackQuota.filter(r => r.data?.code === '22023').length === 58 &&
+    rollbackQuota.filter(r => r.data?.message === 'mutation_quota').length === 1, 'paired rollback consumes one mutation from the same quota window');
+
   // A fresh test identity isolates this burst from setup writes. Keep it inside
   // one window so a true reset cannot appear to be a concurrency overshoot.
+  async function waitForQuotaWindow() {
+    const elapsed = Date.now() % 60000;
+    if (elapsed > 45000) await new Promise(resolve => setTimeout(resolve, 60000 - elapsed + 250));
+  }
   const quotaAccount = await account();
-  const waitMs = Date.now() % 60000;
-  if (waitMs > 45000) await new Promise(resolve => setTimeout(resolve, 60000 - waitMs + 250));
+  await waitForQuotaWindow();
   const startBucket = Math.floor(Date.now() / 60000);
   const quota = await Promise.all(Array.from({ length: 70 }, () => rpc(quotaAccount.token, 'plan', randomUUID(), {})));
   check(Math.floor(Date.now() / 60000) === startBucket, 'quota burst completed within one window');
@@ -203,6 +296,7 @@ try {
     }
     check(signups.some(r => r.status === 429 && r.data?.error_code === 'over_email_send_rate_limit'), 'server signup email quota reached');
   }
+  assert.ok(assertions > 0, 'Backend suite must make real client assertions.');
   console.log(assertions + ' real client assertions passed. Hosted configuration and device checks remain separate.');
 } catch (e) { console.error(e instanceof assert.AssertionError ? e.message : 'Backend test failed. Check disposable backend setup. Sensitive responses withheld.'); process.exitCode = 1; }
 finally { for (const id of created) await request(`/auth/v1/admin/users/${id}`, setupKey, 'DELETE', undefined, true).catch(() => {}); }

@@ -62,10 +62,12 @@ test.each(['remote', 'local'] as const)('conflicting profile and plan stay toget
   const rpc = jest.fn((_name, args) => ({ abortSignal: async () => ({
     error: null, data: args.expected_revision === 2 || args.kind !== 'profile_plan' ? { revision: 3 } : { code: '40001' },
   }) }));
+  let plansAvailable = choice !== 'remote';
   const from = (table: string) => {
     const request = { select: () => request, eq: () => request, order: () => request, limit: () => request, gte: () => request,
       maybeSingle: async () => ({ error: null, data: profileRow }),
-      abortSignal: async () => ({ error: null, data: table === 'profiles' ? [profileRow] : table === 'plans' ? [remotePlan] : [] }) };
+      abortSignal: async () => table === 'plans' && !plansAvailable ? { error: { code: 'unavailable' }, data: null } :
+        { error: null, data: table === 'profiles' ? [profileRow] : table === 'plans' ? [remotePlan] : [] } };
     return request;
   };
   jest.mocked(accountClient).mockResolvedValue({ client: { from, rpc }, isCurrent: () => true } as never);
@@ -80,6 +82,14 @@ test.each(['remote', 'local'] as const)('conflicting profile and plan stay toget
     expect.objectContaining({ id: 'A', state: 'conflict', replacement: { id: 'draft' } }),
     expect.objectContaining({ id: 'local-log', state: 'pending' }),
   ]));
+  if (choice === 'remote') {
+    await expect(store.resolveConflict('A', 'A', choice)).rejects.toThrow('Could not refresh');
+    expect(await store.pending('A')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'A', state: 'conflict', replacement: { id: 'draft' } }),
+    ]));
+    expect(await store.records('A', 'profile')).toEqual([expect.objectContaining({ payload: { ...localProfile, planBinding: true } })]);
+    plansAvailable = true;
+  }
   await store.resolveConflict('A', 'A', choice);
   await store.sync('A');
   if (choice === 'remote') {

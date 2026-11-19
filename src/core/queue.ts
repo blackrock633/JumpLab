@@ -1,6 +1,24 @@
 export type WriteKind = 'profile' | 'plan' | 'workout' | 'jump';
 export type Pending = { id: string; owner: string; kind: WriteKind; revision: number; payload: unknown; replacement?: { id: string; payload: unknown }; state: 'pending' | 'retry' | 'conflict' | 'error'; attempts: number; message?: string };
 export type Outcome = 'deferred' | 'unpublished-plan' | 'ok' | 'unauthorized' | 'conflict' | 'invalid' | 'transient' | 'rate-limited';
+type WriteStatus = Pick<Pending, 'id' | 'kind' | 'state'> & { replacement?: { id: string } };
+
+export function selectActivePlan<T extends { id: string; revision: number; payload: { profileRevision?: number } }>(
+  plans: readonly T[],
+  profile: { revision: number; payload: { planBinding?: boolean } } | undefined,
+  queue: readonly WriteStatus[],
+) {
+  const profileWrite = queue.find(write => write.kind === 'profile');
+  return plans.find(row => {
+    if (profileWrite) return row.id === profileWrite.replacement?.id &&
+      (profileWrite.state === 'pending' || profileWrite.state === 'retry');
+    const proposal = queue.find(write => write.id === row.id);
+    if (proposal?.state === 'conflict' || proposal?.state === 'error') return false;
+    if (row.payload.profileRevision === undefined) return row.revision > 0 && !profile?.payload.planBinding;
+    return (row.revision > 0 || proposal?.kind === 'plan') && row.payload.profileRevision === profile?.revision;
+  });
+}
+
 export function settle(write: Pending, outcome: Exclude<Outcome, 'deferred'>): Pending | null {
   if (outcome === 'ok') return null;
   return { ...write, attempts: write.attempts + 1, state: outcome === 'conflict' ? 'conflict' : outcome === 'invalid' || outcome === 'unpublished-plan' ? 'error' : 'retry',

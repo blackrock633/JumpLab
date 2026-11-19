@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { initialize, assertOwner, changeAccount, markSignOut, progressSeriesLimit, workoutPlanState, putLocal, putBatch, readPending, recentJumpRows, mergeRemote, reconcileWrite, type LocalDB } from '../src/data/local.ts';
+import { drain, selectActivePlan } from '../src/core/queue.ts';
 function adapter(file: string) {
   const raw = new DatabaseSync(file);
   const db: LocalDB = {
@@ -159,6 +160,44 @@ test('profile drafts and their prescriptions have one durable queue entry with a
   assert.equal((await db.getFirstAsync<{ revision: number }>("SELECT revision FROM records WHERE id='plan-one'"))?.revision, 1);
   await assert.rejects(putLocal(db, 'A', 'plan', { profileRevision: 1 }, 'standalone'), /Sync the current profile/);
   close();
+});
+
+test('a rejected profile and replacement share one error and the unpublished plan cannot become active', async () => {
+  const { db, close } = adapter(':memory:');
+  try {
+    await initialize(db); await changeAccount(db, 'A');
+    await putBatch(db, 'A', [
+      { kind: 'profile', id: 'A', payload: { limitation: 'no-impact' } },
+      { kind: 'plan', id: 'draft', payload: { sessions: [{ prescriptionId: 'draft-prescription' }] } },
+    ]);
+    const sent: string[] = [];
+    await drain('A', await readPending(db, 'A', true), async write => {
+      sent.push(write.id);
+      return 'invalid';
+    }, (_id, next, write) => reconcileWrite(db, write, next));
+    assert.deepEqual(sent, ['A']);
+    const queue = await readPending(db, 'A');
+    assert.deepEqual(queue.map(write => [write.kind, write.id, write.replacement?.id, write.state]),
+      [['profile', 'A', 'draft', 'error']]);
+    assert.deepEqual(await readPending(db, 'A', true), []);
+    const rows = await db.getAllAsync<{ id: string; revision: number; payload: string }>(
+      'SELECT id,revision,payload FROM records WHERE owner=?', 'A');
+    const [profile, plan] = ['A', 'draft'].map(id => {
+      const row = rows.find(value => value.id === id)!;
+      return { ...row, payload: JSON.parse(row.payload) };
+    });
+    assert.equal(plan!.revision, 0);
+    assert.equal(selectActivePlan([plan!], profile, queue), undefined);
+  } finally { close(); }
+});
+
+test('an unpublished standalone plan cannot become active after discarding its conflict', () => {
+  const profile = { revision: 2, payload: { planBinding: true } };
+  const draft = { id: 'draft', revision: 0, payload: { profileRevision: 2 } };
+  const saved = { ...draft, id: 'saved', revision: 1 };
+  assert.equal(selectActivePlan([draft, saved], profile, [{ id: draft.id, kind: 'plan', state: 'pending' }]), draft);
+  assert.equal(selectActivePlan([draft, saved], profile, [{ id: draft.id, kind: 'plan', state: 'conflict' }]), saved);
+  assert.equal(selectActivePlan([draft, saved], profile, []), saved);
 });
 
 test('a confirmed erase stays locked across restart until the durable intent is cleared', async () => {

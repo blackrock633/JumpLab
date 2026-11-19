@@ -166,6 +166,17 @@ test('a confirmed erase from A does not sign out a newer B session after restart
   expect(store.switchAccount).toHaveBeenCalledWith('B');
 });
 
+test('an incoming account link cannot exchange a code during a pending sign-out erase', async () => {
+  jest.mocked(store.signOutStatus).mockResolvedValueOnce({ owner: 'A' }).mockResolvedValueOnce({ owner: 'A' });
+  jest.mocked(Linking.getInitialURL).mockResolvedValueOnce('jumplab://auth/callback?code=disposable-test-code');
+  jest.mocked(store.eraseLocalAccount).mockRejectedValueOnce(Error('Receipt cleanup failed'));
+  await render(<App />);
+  await screen.findByRole('button', { name: 'Retry sign out' });
+  expect(store.signOutStatus).toHaveBeenCalledTimes(2);
+  expect(supabase.auth.exchangeCodeForSession).not.toHaveBeenCalled();
+  expect(store.switchAccount).not.toHaveBeenCalled();
+});
+
 test('Today keeps the unstarted final-day workout available after a rollover attempt', async () => {
   jest.useFakeTimers({ now: new Date(2026, 10, 18, 17) });
   const plan = { ...generate(p), sessions: generate(p).sessions.map((s, i) => ({ ...s, workoutId: 'w' + i, prescriptionId: 'p' + i })) };

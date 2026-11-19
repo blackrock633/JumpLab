@@ -1,6 +1,46 @@
-# Sol implementation handoff
+# JumpLab implementation handoff
 
-Updated 2026-11-18 in the isolated implementation checkout following Astra’s review of `a5b903c`. This report records implementation evidence for Astra’s independent verification.
+## Round 5, stage S1
+
+Verified from `18bbe2e` on 2026-11-18 (MST), macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node v24.21.0 and npm 12.2.0. Commands below ran from the JumpLab repository root.
+
+| Command | Exit | Observed result |
+| --- | ---: | --- |
+| `python3 -c 'from pathlib import Path; from shutil import rmtree; p = Path("modules/jump-analysis"); rmtree(p / "node_modules"); (p / "package-lock.json").unlink()'` | 0 | Removed both generated artifacts from the local module. |
+| `test ! -e modules/jump-analysis/node_modules && test ! -e modules/jump-analysis/package-lock.json && git check-ignore modules/jump-analysis/package-lock.json` | 0 | Both artifacts were absent and the nested lockfile path was ignored. |
+| `mkdir modules/jump-analysis/node_modules && (trap 'rmdir modules/jump-analysis/node_modules' EXIT; sh scripts/build-ios.sh)` | 3 | Guard reported “Nested module install found at modules/jump-analysis/node_modules; remove it (duplicate react-native breaks autolinking).” The probe directory was removed. |
+| `cd . && npm run -s typecheck` | 0 | TypeScript passed. |
+| `cd . && npm run -s lint` | 0 | Zero focused source check failures. |
+| `cd . && npx --no-install expo config --type public --json > /dev/null` | 0 | Expo resolved its public configuration. |
+| `cd . && npm run test:unit` | 0 | 43 passed, zero skipped. |
+| `cd . && npm run test:ui` | 0 | 31 passed in five suites. |
+| `cd . && npm run test:native` | 0 | macOS detector, timing and file/media checks passed with synthetic inputs. |
+| `cd . && npm run check:secrets` | 0 | Zero pattern matches in source and reachable Git patches. Zero client asset files scanned. |
+| `supabase --version`, `docker info`, `psql --version` | 127 each | Each command was unavailable on PATH. |
+| `cd . && npm run test:integration`, `cd . && npm run test:security` | 2 each | Disposable backend guard stopped both suites. Zero real client assertions ran. Start a disposable local Supabase and apply migrations before running them. |
+| `cd . && npm run evaluate:video` | 2 | “UNVERIFIED: no annotated real clips.” The sample count was zero. |
+| `cd . && npm run check:docs` | 0 | Commands, paths and all 38 IDs were found. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+### Reconciliation
+
+| Finding | Stage S1 evidence |
+| --- | --- |
+| R5-01 nested install | Removed the duplicate module install and added an early exit in `scripts/build-ios.sh`. The guard probe returned 3 before CocoaPods. |
+| JL-013, JL-019 and JL-031 profile conflict recovery | `src/data/store.ts` now fetches the saved plan before settling “Keep saved version” and confirms the cache has an acknowledged plan for that profile revision when training is active. The store test “conflicting profile and plan stay together when keeping the remote version” injects a download failure, checks that the conflict is retained and then recovers it. Its local-choice counterpart verifies the pair is retried as one RPC. |
+| JL-019 discarded plan selection | `selectActivePlan` in `src/core/queue.ts` requires an unpublished standalone draft to have a sendable plan entry. “An unpublished standalone plan cannot become active after discarding its conflict” covers the case where an abandoned draft still references the current profile revision. |
+| R5-03 paired rollback | “A rejected profile and replacement share one error and the unpublished plan cannot become active” passed with host SQLite. The disposable backend test submits a structurally valid replacement that violates the profile’s impact constraint and checks the retained profile revision, absent plan and prescription rows, and consumed quota. Backend execution remains blocked. |
+| R5-02 and JL-015 parity | Shared training fixtures drive generation and hold, increase and deload rollovers. The backend test also checks exact rollover replay after a newer profile publication and separately tampers with practice adjacency, impact, load and weekly time. Host training scenarios passed. Server acceptance and rejection assertions remain blocked. |
+| JL-020 and JL-023 interrupted sign-out | Confirmed the SQLite erase intent survives restart and blocks owner access, and the app resumes cleanup before opening another account. The UI test “an incoming account link cannot exchange a code during a pending sign-out erase” passed. No installed-device evidence. |
+| JL-016 and JL-018 final-day rollover | “Rollover preserves the final scheduled workout until it completes or its day ends” covered unstarted, in-progress, completed and next-day cases. Today’s final-day UI test passed. |
+| JL-011 evaluator gate | “Rejection-only coverage cannot pass and repeated coverage requires multiple matched events” passed. The production evaluator exited 2 with zero clips. Sample accuracy remains unverified. |
+| JL-022, JL-024 and JL-025 backend boundary | Source inspection confirmed canonical profile identity and the timestamp validator. The backend assertions require B’s first revision after A’s forged ID, the app timestamp format, rejection of non-finite, impossible, non-UTC, loose and out-of-range dates, and consistent completion timestamps. Applied schema and generated types still require local Supabase. |
+
+The clean install, simulator link and launch, dependency audit, built-app scan and database type regeneration are stage S2 work. A signed physical install, device measurements and consented original footage remain outstanding. The previous round’s results follow as historical evidence.
+
+## Round 4 implementation handoff
+
+Updated 2026-11-18 in the isolated implementation checkout following Astra’s review of `a5b903c`. The historical checks below were not carried forward as round 5 passes.
 
 ## Executed checks
 

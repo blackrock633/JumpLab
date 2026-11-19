@@ -13,6 +13,7 @@ import { progressSeriesLimit } from './src/data/local';
 import { adapt, canOpenWorkout, canPrepareNextWeek, completedPrescription, futureProfile, generate, localDate, type Plan, type Profile } from './src/core/training';
 import { compatible, displayHeight, LEGACY_METHOD, METHOD, PREVIOUS_METHOD, type JumpResult, type JumpType } from './src/core/measurement';
 import { recoveryCode } from './src/core/auth-link';
+import { selectActivePlan } from './src/core/queue';
 
 type SavedPlan = Omit<Plan, 'sessions'> & { sessions: SavedSession[]; changeReason?: string; programId?: string; profileRevision?: number };
 type SavedProfile = Profile & { planBinding?: boolean };
@@ -39,15 +40,7 @@ function Application() {
   const currentOwner = useRef(owner); currentOwner.current = owner;
   const profile = profiles[0]?.payload;
   const profileWrite = queue.find(write => write.kind === 'profile');
-  const activePlan = plans.find(row => {
-    if (profileWrite) return row.id === profileWrite.replacement?.id &&
-      (profileWrite.state === 'pending' || profileWrite.state === 'retry');
-    const proposal = queue.find(write => write.id === row.id);
-    if (proposal?.state === 'conflict' || proposal?.state === 'error') return false;
-    return row.payload.profileRevision === undefined
-      ? row.revision > 0 && !profile?.planBinding
-      : row.payload.profileRevision === profiles[0]?.revision;
-  });
+  const activePlan = selectActivePlan(plans, profiles[0], queue);
   const plan = activePlan?.payload;
   const paused = profile?.pain || plan?.sessions.every(s => s.exercises.every(e => e.sets === 0));
   async function read(account: string) {

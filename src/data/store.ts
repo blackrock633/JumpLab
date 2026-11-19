@@ -79,10 +79,22 @@ export async function resolveConflict(owner: string, id: string, choice: 'remote
     throw Error('Could not load the saved version. Your local work is preserved.');
   }
   if (choice === 'local' && (queued.kind === 'jump' || queued.kind === 'plan')) throw Error('Saved measurements and plans are immutable. Keep the saved version or retain this local conflict for support.');
+  const keepRemoteProfile = choice === 'remote' && queued.kind === 'profile';
+  if (keepRemoteProfile) {
+    // Hydration keeps the queued profile protected while downloading its plan.
+    await hydrate(owner);
+  }
   await serial(() => db.withExclusiveTransactionAsync(async tx => {
     await assertOwner(tx, owner);
     const latest = await tx.getFirstAsync<{ value: string }>('SELECT value FROM pending WHERE owner=? AND id=?', owner, id);
     if (!isCurrent() || latest?.value !== found?.value) throw Error('The local record changed. Review it again.');
+    if (keepRemoteProfile && data) {
+      const savedProfile = data.data as { planBinding?: boolean; pain?: boolean } | null;
+      if (savedProfile?.planBinding && !savedProfile.pain && !await tx.getFirstAsync(
+        "SELECT 1 FROM records WHERE owner=? AND kind='plan' AND revision>0 AND json_extract(payload,'$.profileRevision')=? LIMIT 1",
+        owner, data.revision,
+      )) throw Error('Could not load the saved training plan. Your local work is preserved.');
+    }
     if (!data) {
       // A plan built under an obsolete profile revision was never published.
       // Keep its local prescription available to open existing workout history.
@@ -101,7 +113,7 @@ export async function resolveConflict(owner: string, id: string, choice: 'remote
       await tx.runAsync('UPDATE pending SET id=?,value=? WHERE id=? AND owner=?', data.id, JSON.stringify({ ...queued, id: data.id, revision: data.revision, state: 'pending', message: undefined }), id, owner);
     }
   }));
-  if (choice === 'remote' && (queued.kind === 'profile' || queued.kind === 'plan')) await hydrate(owner);
+  if (choice === 'remote' && queued.kind === 'plan') await hydrate(owner);
 }
 export async function save(owner: string, kind: WriteKind, payload: unknown, id = randomUUID()): Promise<string> {
   return serial(async () => {

@@ -35,7 +35,7 @@ test('a stalled profile refresh leaves local workout saves responsive and protec
   const response = new Promise<{ data: []; error: null }>(resolve => { respond = resolve; });
   const request = { select: () => request, eq: () => request, order: () => request, limit: () => request, abortSignal: () => { start(); return response; } };
   jest.mocked(accountClient).mockResolvedValue({ client: { from: () => request }, isCurrent: () => true } as never);
-  const refreshing = store.hydrate('A', true);
+  const refreshing = store.hydrate('A', 'profile');
   try {
     await started;
     await store.save('A', 'workout', { sets: [5] }, 'workout');
@@ -50,6 +50,34 @@ test('a stalled profile refresh leaves local workout saves responsive and protec
   await store.switchAccount('B', true);
   expect(await store.records('B', 'workout')).toEqual([]);
   expect(await store.pending('B')).toEqual([]);
+});
+
+test('scheduling history rejects an interrupted workout page and retries through the last page', async () => {
+  await store.switchAccount('A', true);
+  const created = '2026-11-16T17:00:00.000Z';
+  const firstPage = Array.from({ length: 100 }, (_, i) => ({
+    id: `00000000-0000-4000-8000-${String(200 - i).padStart(12, '0')}`,
+    user_id: 'A', revision: 1, created_at: created, data: { updatedAt: created },
+  }));
+  const last = { ...firstPage[0]!, id: '00000000-0000-4000-8000-000000000001' };
+  const request = {
+    select: jest.fn(() => request), eq: jest.fn(() => request), gte: jest.fn(() => request),
+    or: jest.fn(() => request), order: jest.fn(() => request), limit: jest.fn(() => request),
+    abortSignal: jest.fn()
+      .mockResolvedValueOnce({ data: firstPage, error: null })
+      .mockResolvedValueOnce({ data: null, error: { message: 'interrupted' } })
+      .mockResolvedValueOnce({ data: firstPage, error: null })
+      .mockResolvedValueOnce({ data: [last], error: null }),
+  };
+  const from = jest.fn(() => request);
+  jest.mocked(accountClient).mockResolvedValue({ client: { from }, isCurrent: () => true } as never);
+  const cutoff = '2026-11-10T00:00:00.000Z';
+  await expect(store.hydrate('A', 'workout', cutoff)).rejects.toThrow('Could not refresh');
+  await expect(store.hydrate('A', 'workout', cutoff)).resolves.toEqual([...firstPage, last]);
+  expect(from.mock.calls).toEqual([['workouts'], ['workouts'], ['workouts'], ['workouts']]);
+  expect(request.gte).toHaveBeenCalledWith('updated_at', cutoff);
+  expect(request.or).toHaveBeenCalledTimes(2);
+  expect(await store.records('A', 'workout', cutoff)).toHaveLength(101);
 });
 
 test('a rejected profile_plan RPC leaves a single terminal pair and no active draft', async () => {

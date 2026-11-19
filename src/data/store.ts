@@ -47,12 +47,14 @@ export async function eraseLocalAccount(owner: string) {
     await changeAccount(db, null);
   });
 }
-export async function records<T>(owner: string, kind: WriteKind): Promise<LocalRecord<T>[]> {
+export async function records<T>(owner: string, kind: WriteKind, workoutSince?: string): Promise<LocalRecord<T>[]> {
   return serial(async () => {
     const db = await database(); await assertOwner(db, owner);
-    const rows = kind === 'jump'
-      ? await recentJumpRows(db, owner)
-      : await db.getAllAsync<DiskRow>('SELECT id,owner,kind,payload,revision FROM records WHERE owner=? AND kind=? ORDER BY julianday(created_at) DESC,rowid DESC LIMIT 100', owner, kind);
+    const columns = 'id,owner,kind,payload,revision';
+    const rows = kind === 'jump' ? await recentJumpRows(db, owner) :
+      kind === 'workout' && workoutSince ? await db.getAllAsync<DiskRow>(`SELECT ${columns} FROM records WHERE owner=? AND kind='workout'
+        AND julianday(COALESCE(json_extract(payload,'$.completedAt'),json_extract(payload,'$.updatedAt'))) >= julianday(?)`, owner, workoutSince) :
+      await db.getAllAsync<DiskRow>(`SELECT ${columns} FROM records WHERE owner=? AND kind=? ORDER BY julianday(created_at) DESC,rowid DESC LIMIT 100`, owner, kind);
     return rows.map(r => ({ ...r, payload: JSON.parse(r.payload) as T }));
   });
 }
@@ -234,10 +236,11 @@ async function syncPending(owner: string) {
   });
 }
 const tables = { profile: 'profiles', plan: 'plans', workout: 'workouts', jump: 'jump_results' } as const;
-export async function hydrate(owner: string, profileOnly = false) {
+export async function hydrate(owner: string, scope: 'all' | 'profile' | 'workout' = 'all', workoutSince?: string) {
   const db = await database(); await serial(() => assertOwner(db, owner));
   const { client, isCurrent } = await accountClient(owner);
-  for (const kind of profileOnly ? ['profile'] as const : ['profile', 'plan', 'workout', 'jump'] as const) {
+  const workoutRows: RemoteRow[] = [];
+  for (const kind of scope === 'all' ? ['profile', 'plan', 'workout', 'jump'] as const : [scope]) {
     const limit = kind === 'profile' ? 1 : 100;
     const since = new Date(Date.now() - 90 * 86400000).toISOString();
     let cursor: { created_at: string; id: string } | undefined;
@@ -246,6 +249,7 @@ export async function hydrate(owner: string, profileOnly = false) {
       const selected = kind === 'jump' ? client.from('jump_history').select(columns) : client.from(tables[kind]).select(columns);
       let query = selected.eq('user_id', owner);
       if (kind === 'jump') query = query.gte('created_at', since);
+      if (scope === 'workout' && workoutSince) query = query.gte('updated_at', workoutSince);
       if (cursor) {
         const { created_at: date, id } = cursor;
         query = query.or('created_at.lt.' + date + ',and(created_at.eq.' + date + ',id.lt.' + id + ')');
@@ -265,15 +269,17 @@ export async function hydrate(owner: string, profileOnly = false) {
         if (!isCurrent()) throw Error('Account changed during refresh.');
         await mergeRemote(db, owner, kind, rows);
       });
-      if (kind !== 'jump' || data.length < limit) break;
+      if (scope === 'workout') workoutRows.push(...rows);
+      if ((kind !== 'jump' && scope !== 'workout') || data.length < limit) break;
       const last = rows.at(-1)!;
       // The cursor comes from Postgres and must be a timestamp and UUID
       // before it is interpolated into PostgREST's filter grammar.
       if (!/^[0-9T:Z.+ -]+$/.test(last.created_at) || !Number.isFinite(Date.parse(last.created_at)) ||
-        !/^[a-f0-9-]{36}$/i.test(last.id)) throw Error('Could not read the next page of measurements.');
+        !/^[a-f0-9-]{36}$/i.test(last.id)) throw Error('Could not read the next page of saved records.');
       cursor = last;
     }
   }
+  return workoutRows;
 }
 
 export async function prescription<T>(owner: string, id: string) {

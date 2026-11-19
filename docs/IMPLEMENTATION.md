@@ -1,5 +1,33 @@
 # JumpLab implementation handoff
 
+## Round 5, stage S1, iteration 3
+
+Verified from `4da83d4` on 2026-11-19 (MST). Commands ran in the JumpLab root unless shown otherwise. Earlier logs are historical.
+
+| Command | Exit | Observed result |
+| --- | ---: | --- |
+| `test ! -e modules/jump-analysis/node_modules && test ! -e modules/jump-analysis/package-lock.json && git check-ignore modules/jump-analysis/package-lock.json` | 0 | Both generated paths were absent. The nested lockfile path is ignored. |
+| `npm run -s typecheck` | 0 | TypeScript passed. |
+| `npm run -s lint` | 0 | Zero source check failures. |
+| `npx --no-install expo config --type public --json > /dev/null` | 0 | Expo public configuration resolved. |
+| `npm run test:unit` | 0 | 46 passed, zero skipped. |
+| `npm run test:ui` | 0 | 50 passed across five suites, with mock transport and native modules where applicable. |
+| `npm run test:native` | 0 | macOS synthetic transition, timing, media and receipt checks passed. |
+| `npm run check:docs` | 0 | Documented paths and all 38 criterion IDs found. |
+| `npm run check:secrets` | 0 | Zero pattern matches across source, reachable Git patches and 155 existing client assets. |
+| `xcrun simctl list devices available` | 1 | CoreSimulator refused the connection. |
+| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/../.cache/DerivedData" CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | CoreSimulator connection invalid. Xcode reported “JumpLab.xcworkspace is not a workspace file.” The repository-local DerivedData path kept build writes in JumpLab. |
+| `npm run build:ios:simulator` | 1 | CocoaPods could not resolve `cdn.cocoapods.org` while fetching `all_pods_versions_a_9_3.txt`. |
+| `supabase --version`, `docker info`, `psql --version` | 127 each | Commands unavailable on PATH. |
+| `node --check scripts/backend-test.mjs` | 0 | Backend test script parsed. |
+| `npm run test:integration`, `npm run test:security` | 2 each | Disposable-environment guard stopped both suites before any assertions. |
+| `npm run evaluate:video` | 2 | Zero annotated clips. Real-video accuracy remains unverified. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+- JL-013, JL-015 and JL-031. “Interrupted initial workout history defers a Monday-to-Friday edit even after restart” reproduces partial hydration before a profile edit and checks that the queued replacement starts the following week. Each edit checks workout history afresh, including after restart. A failed download reserves the rest of the current week and allows recovery from possible same-day work. “Scheduling history rejects an interrupted workout page and retries through the last page” exercises production store pagination and SQLite against mocked transport. The Friday budget cases check both cached and freshly downloaded completions.
+- JL-013 and JL-019. The routine edit UI case saves a body-weight change, resumes the previous prescription in Today, and completes the workout with the same IDs and logged set. The pain and no-impact cases keep the logged work in history and block resuming it. The unpublished-plan case keeps the current workout reachable by deferring replacement until its prescription can sync.
+- R5-02 and R5-03. The shared parity and paired rollback tests are present. Live results require a disposable local Supabase CLI and container runtime with migrations applied. Simulator launch evidence requires a successful build and access to CoreSimulator. No consented athlete clips or signed iPhone run were available.
+
 ## Round 5, stage S1, iteration 2
 
 Verified from `025469a` on 2026-11-19 (MST). Commands start in the JumpLab root unless the command changes directories. Earlier logs below are historical.

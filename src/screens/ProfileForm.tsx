@@ -36,7 +36,7 @@ export function ProfileForm({ initial, onSave }: { initial?: Profile; onSave: (p
     <Choices label="Training limitations" values={['none', 'no-impact', 'no-loaded-squats']} value={p.limitation} onChange={v => update('limitation', v)} />
     <Copy>For other limitations, get individual guidance before using these templates.</Copy>
     <Button title={p.pain ? 'Current pain: yes — pause training' : 'Current pain: no'} selected={p.pain} onPress={() => update('pain', !p.pain)} />
-    <Copy>Saving changes replaces future prescriptions. Completed workouts stay in history and count toward this week’s time budget. Your new schedule may start next week to fit your budget or allow recovery. Pain pauses automatic training.</Copy>
+    <Copy>Saving changes replaces future prescriptions. You can finish a workout you already started today if your updated profile still allows it. Completed workouts count toward this week’s time budget. Your new schedule may start next week to fit your budget or allow recovery. Pain pauses automatic training.</Copy>
     {error ? <Copy>{error}</Copy> : null}
     <View style={styles.block}><Button title={busy ? 'Saving…' : 'Save profile and future plan'} disabled={busy} onPress={() => {
       const profile = { ...p, weightKg: kg(Number(weight), p.displayUnits), knownSquatKg: strength ? kg(Number(strength), p.displayUnits) : null, startHour: Number(hour), weeklyMinutes: Number(weekly), sessionMinutes: Number(session) };

@@ -6,6 +6,7 @@ import App from '../App';
 import { eraseDeletedSession, offlineSessionOwner, supabase } from '../src/data/auth';
 import * as store from '../src/data/store';
 import { generate, type Profile } from '../src/core/training';
+import type { WorkoutRecord } from '../src/screens/Workout';
 import { measurement } from '../src/core/measurement';
 import Native, { type AnalysisReceipt } from '../modules/jump-analysis/src';
 jest.mock('../modules/jump-analysis/src', () => ({ __esModule: true, default: { pick: jest.fn(), analyze: jest.fn(), cancel: jest.fn(), discard: jest.fn().mockResolvedValue(undefined) } }));
@@ -13,7 +14,7 @@ jest.mock('react-native-safe-area-context', () => {
   const { View } = require('react-native'); return { SafeAreaProvider: View, SafeAreaView: View };
 });
 jest.mock('../src/data/auth', () => ({ configured: true, eraseDeletedSession: jest.fn().mockResolvedValue(undefined), offlineSessionOwner: jest.fn().mockResolvedValue('A'), AUTH_REDIRECT: 'jumplab://auth/callback', supabase: { auth: { getSession: jest.fn(), signInWithPassword: jest.fn(), onAuthStateChange: jest.fn(), signOut: jest.fn().mockResolvedValue({ error: null }), exchangeCodeForSession: jest.fn().mockResolvedValue({ error: null }), startAutoRefresh: jest.fn(), stopAutoRefresh: jest.fn() } } }));
-jest.mock('../src/data/store', () => ({ UnsyncedAccount: class extends Error {}, records: jest.fn(), save: jest.fn(), saveBatch: jest.fn().mockResolvedValue(undefined), commitAnalysis: jest.fn(), eraseLocalAccount: jest.fn().mockResolvedValue(undefined), signOutStatus: jest.fn().mockResolvedValue(null), beginSignOut: jest.fn().mockResolvedValue(undefined), clearSignOut: jest.fn().mockResolvedValue(undefined), deletionStatus: jest.fn().mockResolvedValue(null), clearDeletion: jest.fn().mockResolvedValue(undefined), confirmDeletion: jest.fn().mockResolvedValue(undefined), recoverAnalysis: jest.fn().mockResolvedValue(null), hydrate: jest.fn().mockResolvedValue(undefined), pending: jest.fn().mockResolvedValue([]), switchAccount: jest.fn().mockResolvedValue(undefined), cachedAccount: jest.fn().mockResolvedValue('A') }));
+jest.mock('../src/data/store', () => ({ UnsyncedAccount: class extends Error {}, records: jest.fn(), save: jest.fn(), saveBatch: jest.fn().mockResolvedValue(undefined), commitAnalysis: jest.fn(), eraseLocalAccount: jest.fn().mockResolvedValue(undefined), signOutStatus: jest.fn().mockResolvedValue(null), beginSignOut: jest.fn().mockResolvedValue(undefined), clearSignOut: jest.fn().mockResolvedValue(undefined), deletionStatus: jest.fn().mockResolvedValue(null), clearDeletion: jest.fn().mockResolvedValue(undefined), confirmDeletion: jest.fn().mockResolvedValue(undefined), recoverAnalysis: jest.fn().mockResolvedValue(null), hydrate: jest.fn().mockResolvedValue([]), pending: jest.fn().mockResolvedValue([]), switchAccount: jest.fn().mockResolvedValue(undefined), cachedAccount: jest.fn().mockResolvedValue('A') }));
 const p: Profile = { goal: 'standing', experience: 'new', days: [1, 3], practiceDays: [], startHour: 17, weeklyMinutes: 60, sessionMinutes: 30, equipment: 'none', weightKg: 70, displayUnits: 'kg', knownSquatKg: null, limitation: 'none', pain: false, startDate: '2026-11-16' };
 const a = { user: { id: 'A' } } as Session;
 let listener: (event: AuthChangeEvent, next: Session | null) => void;
@@ -115,9 +116,9 @@ test('failed password login protects private cached work and a successful retry 
   expect(store.eraseLocalAccount).not.toHaveBeenCalled();
 });
 
-test.each([[25, '2026-11-27'], [50, '2026-11-20']])(
-  'editing Monday availability to Friday after completing a workout respects a %d-minute weekly budget',
-  async (weeklyMinutes, scheduledOn) => {
+test.each([[25, '2026-11-27', 'cached'], [50, '2026-11-20', 'cached'], [25, '2026-11-27', 'downloaded']])(
+  'a %d-minute weekly budget schedules Friday on %s when Monday’s completion is %s',
+  async (weeklyMinutes, scheduledOn, history) => {
     jest.useFakeTimers().setSystemTime(new Date(2026, 10, 17, 12));
     try {
       const initial = { ...p, days: [1], weeklyMinutes };
@@ -125,8 +126,13 @@ test.each([[25, '2026-11-27'], [50, '2026-11-20']])(
       const monday = { ...plan.sessions[0]!, prescriptionId: 'monday-prescription', workoutId: 'monday-workout' };
       const completedAt = new Date(2026, 10, 16, 18).toISOString();
       const completed = { prescriptionId: monday.prescriptionId, completed: true, completedAt, updatedAt: completedAt, sets: [{ done: true }] };
+      let cached = history === 'cached';
+      if (!cached) jest.mocked(store.hydrate).mockImplementationOnce(async () => {
+        cached = true;
+        return [{ id: monday.workoutId, user_id: 'A', revision: 1, created_at: completedAt, data: completed }];
+      });
       jest.mocked(store.records).mockImplementation(async (owner, kind) => {
-        const payload = kind === 'profile' ? initial : kind === 'plan' ? { ...plan, sessions: [monday] } : kind === 'workout' ? completed : null;
+        const payload = kind === 'profile' ? initial : kind === 'plan' ? { ...plan, sessions: [monday] } : kind === 'workout' && cached ? completed : null;
         return payload ? [{ id: kind === 'workout' ? monday.workoutId : kind, owner, kind, payload, revision: 1 }] as never : [];
       });
       await render(<App />);
@@ -144,6 +150,123 @@ test.each([[25, '2026-11-27'], [50, '2026-11-20']])(
       await screen.findByRole('button', { name: /Completed.*1 sets done/ });
       expect(store.save).not.toHaveBeenCalled();
     } finally { jest.useRealTimers(); }
+  },
+);
+
+test('interrupted initial workout history defers a Monday-to-Friday edit even after restart', async () => {
+  jest.useFakeTimers({ now: new Date(2026, 10, 17, 12) });
+  try {
+    const initial = { ...p, days: [1], weeklyMinutes: 25 };
+    const plan = generate(initial);
+    let cached = false;
+    jest.mocked(store.records).mockImplementation(async (owner, kind) => {
+      const payload = !cached ? null : kind === 'profile' ? initial : kind === 'plan' ? plan : null;
+      return payload ? [{ id: kind, owner, kind, payload, revision: 1 }] as never : [];
+    });
+    jest.mocked(store.hydrate).mockImplementationOnce(async () => {
+      cached = true; // The profile and plan committed before the workout request failed.
+      throw Error('Monday completion was not downloaded');
+    }).mockRejectedValueOnce(Error('Still offline after restart'));
+
+    const firstLaunch = await render(<App />);
+    await screen.findByRole('button', { name: /^2026-11-16/ });
+    await firstLaunch.unmount();
+    await render(<App />);
+    await fireEvent.press(await screen.findByRole('button', { name: 'Edit training profile' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Monday' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Friday' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Save profile and future plan' }));
+    await waitFor(() => expect(store.saveBatch).toHaveBeenCalledWith('A', [
+      expect.objectContaining({ kind: 'profile', payload: expect.objectContaining({ startDate: '2026-11-23', days: [5] }) }),
+      expect.objectContaining({ kind: 'plan', payload: expect.objectContaining({
+        changeReason: expect.stringMatching(/history could not be refreshed/),
+        sessions: [expect.objectContaining({ scheduledOn: '2026-11-27', minutes: 25 })],
+      }) }),
+    ]));
+    expect(store.hydrate).toHaveBeenNthCalledWith(2, 'A', 'workout', expect.any(String));
+  } finally { jest.useRealTimers(); }
+});
+
+test.each(['routine edit', 'pain pause', 'no-impact restriction', 'edit of an unpublished plan'])(
+  'a %s keeps the started workout log and applies the new profile immediately',
+  async edit => {
+    jest.useFakeTimers({ now: new Date(2026, 10, 16, 17) });
+    try {
+      const plan = generate(p);
+      const original = { ...plan.sessions[0]!, workoutId: 'original-workout', prescriptionId: 'original-prescription' };
+      const unpublished = edit === 'edit of an unpublished plan';
+      if (unpublished) jest.mocked(store.pending).mockResolvedValue([
+        { id: 'A', owner: 'A', kind: 'profile', state: 'pending', revision: 0, attempts: 0, replacement: { id: 'original' } },
+      ]);
+      let savedProfile = p;
+      let savedWorkout: WorkoutRecord | undefined;
+      let replacement: unknown;
+      jest.mocked(store.records).mockImplementation(async (owner, kind) => {
+        const row = (id: string, payload: unknown) => ({ id, owner, kind, payload, revision: 1 });
+        if (kind === 'profile') return [row('A', savedProfile)] as never;
+        if (kind === 'plan') return [
+          ...(replacement ? [row('replacement', replacement)] : []),
+          { ...row('original', { ...plan, sessions: [original] }), revision: unpublished ? 0 : 1 },
+        ] as never;
+        if (kind === 'workout' && savedWorkout) return [row(original.workoutId, savedWorkout)] as never;
+        return [];
+      });
+      jest.mocked(store.save).mockImplementation(async (_owner, _kind, payload, id) => {
+        savedWorkout = payload as WorkoutRecord;
+        return id!;
+      });
+      jest.mocked(store.saveBatch).mockImplementationOnce(async (_owner, values) => {
+        savedProfile = values[0]!.payload as Profile;
+        replacement = values[1]?.payload;
+      });
+      await render(<App />);
+      await fireEvent.press(await screen.findByRole('button', { name: /^2026-11-16/ }));
+      await fireEvent.press(screen.getAllByRole('button', { name: 'Set 1: mark done' })[0]!);
+      await screen.findByRole('button', { name: 'Set 1: done' });
+      await fireEvent.press(screen.getByRole('button', { name: 'Settings' }));
+      await fireEvent.press(screen.getByRole('button', { name: 'Edit profile' }));
+      if (edit === 'routine edit' || unpublished) {
+        await fireEvent.changeText(screen.getByLabelText('Body weight (kg)'), '72');
+      } else if (edit === 'pain pause') {
+        await fireEvent.press(screen.getByRole('button', { name: 'Current pain: no' }));
+      } else {
+        await fireEvent.press(screen.getByRole('button', { name: 'no-impact' }));
+      }
+      await fireEvent.press(screen.getByRole('button', { name: 'Save profile and future plan' }));
+      if (unpublished) {
+        await screen.findByText(/Sync this plan in Settings before replacing it/);
+        expect(store.saveBatch).not.toHaveBeenCalled();
+        await fireEvent.press(screen.getByRole('button', { name: 'Cancel profile edit' }));
+        await fireEvent.press(screen.getByRole('button', { name: /^2026-11-16/ }));
+        expect(screen.getByRole('button', { name: 'Set 1: done' })).toBeTruthy();
+        return;
+      }
+      await screen.findByText('Your week');
+      if (edit === 'routine edit') {
+        expect(savedProfile.weightKg).toBe(72);
+        expect(savedProfile.startDate).toBe('2026-11-19');
+        await fireEvent.press(await screen.findByRole('button', { name: /^Resume workout/ }));
+        expect(screen.getByRole('button', { name: 'Set 1: done' })).toBeTruthy();
+        await fireEvent.press(screen.getByRole('button', { name: 'Finish workout' }));
+        await screen.findByText('Completed workout');
+        expect(store.save).toHaveBeenLastCalledWith('A', 'workout', expect.objectContaining({
+          completed: true, prescriptionId: original.prescriptionId, sets: expect.arrayContaining([expect.objectContaining({ done: true })]),
+        }), original.workoutId);
+      } else {
+        expect(screen.queryByRole('button', { name: /^Resume workout/ })).toBeNull();
+        await fireEvent.press(screen.getByRole('button', { name: 'Progress' }));
+        await fireEvent.press(screen.getByRole('button', { name: /In progress.*1 sets done/ }));
+        await screen.findByText(/current training profile pauses or restricts this workout/);
+        expect(store.save).toHaveBeenCalledTimes(1);
+        if (edit === 'pain pause') {
+          expect(savedProfile.pain).toBe(true);
+          expect(store.hydrate).not.toHaveBeenCalled();
+        } else expect(savedProfile.limitation).toBe('no-impact');
+      }
+    } finally {
+      jest.mocked(store.pending).mockResolvedValue([]);
+      jest.useRealTimers();
+    }
   },
 );
 

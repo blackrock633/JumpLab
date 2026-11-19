@@ -43,6 +43,15 @@ export function canPrepareNextWeek<T extends Pick<Session, 'scheduledOn'>>(
 export function canOpenWorkout(session: Session, completed: boolean, now = new Date()) {
   return completed || session.scheduledOn === localDate(now);
 }
+export function canResumeWorkout(session: Session, profile: Profile) {
+  return !profile.pain && !profile.practiceDays.some(day => circularDistance(day, session.day) < 2) &&
+    session.exercises.every(exercise => {
+      if (exercise.id === 'jump') return profile.limitation !== 'no-impact';
+      if (exercise.id !== 'squat' || exercise.name === 'Chair squat') return true;
+      if (profile.limitation === 'no-loaded-squats' || profile.equipment === 'none') return false;
+      return exercise.name === (profile.equipment === 'dumbbells' ? 'Goblet squat' : 'Squat');
+    });
+}
 export function futureProfile(p: Profile, completions: (string | null)[], now = new Date()): Profile {
   const dates = completions.filter((t): t is string => t !== null).map(Date.parse).filter(Number.isFinite);
   // Three calendar dates after a completion conservatively leaves >=48 hours at any scheduled hour.

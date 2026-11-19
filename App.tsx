@@ -10,7 +10,7 @@ import { Workout, type WorkoutRecord, type SavedSession } from './src/screens/Wo
 import { AUTH_REDIRECT, configured, eraseDeletedSession, offlineSessionOwner, supabase } from './src/data/auth';
 import * as store from './src/data/store';
 import { progressSeriesLimit } from './src/data/local';
-import { adapt, canOpenWorkout, canPrepareNextWeek, completedPrescription, futureProfile, generate, localDate, trainingWeekStart, type Plan, type Profile } from './src/core/training';
+import { adapt, canOpenWorkout, canPrepareNextWeek, canResumeWorkout, completedPrescription, futureProfile, generate, localDate, trainingWeekStart, type Plan, type Profile } from './src/core/training';
 import { compatible, displayHeight, LEGACY_METHOD, METHOD, PREVIOUS_METHOD, type JumpResult, type JumpType } from './src/core/measurement';
 import { recoveryCode } from './src/core/auth-link';
 import { selectActivePlan } from './src/core/queue';
@@ -35,6 +35,7 @@ function Application() {
   const [profiles, setProfiles] = useState<store.LocalRecord<SavedProfile>[]>([]), [plans, setPlans] = useState<store.LocalRecord<SavedPlan>[]>([]);
   const [jumps, setJumps] = useState<store.LocalRecord<JumpResult>[]>([]), [workouts, setWorkouts] = useState<store.LocalRecord<WorkoutRecord>[]>([]), [queue, setQueue] = useState<store.PendingStatus[]>([]);
   const [selectedSession, setSelectedSession] = useState<SavedSession | null>(null), [editProfile, setEditProfile] = useState(false), [progressType, setProgressType] = useState<JumpType>('standing');
+  const [savingProfile, setSavingProfile] = useState(false);
   const [progressMethod, setProgressMethod] = useState<MethodVersion>('0.3'), [chartLimit, setChartLimit] = useState(30);
   const owner = session?.user.id ?? offlineOwner ?? undefined;
   const currentOwner = useRef(owner); currentOwner.current = owner;
@@ -43,6 +44,12 @@ function Application() {
   const activePlan = selectActivePlan(plans, profiles[0], queue);
   const plan = activePlan?.payload;
   const paused = profile?.pain || plan?.sessions.every(s => s.exercises.every(e => e.sets === 0));
+  const byWorkout = new Map(plans.flatMap(row => row.payload.sessions.map(s => [s.workoutId, s] as const)));
+  const resumable = profile && !paused && workouts.flatMap(w => {
+    const s = byWorkout.get(w.id);
+    return !w.payload.completed && s && canOpenWorkout(s, false) && canResumeWorkout(s, profile) &&
+      !plan?.sessions.some(current => current.workoutId === w.id) ? [s] : [];
+  });
   async function read(account: string) {
     const [p, pl, j, w, q] = await Promise.all([store.records<SavedProfile>(account, 'profile'), store.records<SavedPlan>(account, 'plan'), store.records<JumpResult>(account, 'jump'), store.records<WorkoutRecord>(account, 'workout'), store.pending(account)]);
     if (currentOwner.current !== account) return;
@@ -110,7 +117,7 @@ function Application() {
   async function refresh() {
     if (!owner) return;
     await action(async () => {
-      await store.hydrate(owner, true);
+      await store.hydrate(owner, 'profile');
       if (currentOwner.current !== owner) return;
       setProfileUnknown(false);
       try {
@@ -129,25 +136,59 @@ function Application() {
   async function saveProfile(p: Profile) {
     if (!owner) return;
     const now = new Date();
-    const completed = workouts.filter(w => w.payload.completed);
-    p = futureProfile(p, completed.map(w => w.payload.completedAt), now);
     let replacement: SavedPlan | undefined;
     if (!p.pain) {
-      const monday = trainingWeekStart(localDate(now));
+      const today = localDate(now);
+      const monday = trainingWeekStart(today);
       const nextMonday = trainingWeekStart(monday, 1);
       const inCurrentWeek = (date: string) => date >= monday && date < nextMonday;
-      let next = generate(p);
+      const cutoff = new Date(`${monday}T00:00:00`);
+      cutoff.setDate(cutoff.getDate() - 3);
+      let historyComplete = true;
+      let remote: Awaited<ReturnType<typeof store.hydrate>> = [];
+      if (profile) {
+        try {
+          // Include the server's timestamp tolerance, and verify history even
+          // when a previous launch cached only the profile and plan.
+          const serverCutoff = new Date(cutoff);
+          serverCutoff.setDate(serverCutoff.getDate() - 2);
+          remote = await store.hydrate(owner, 'workout', serverCutoff.toISOString());
+        } catch { historyComplete = false; }
+      }
+      const local = await store.records<WorkoutRecord>(owner, 'workout', cutoff.toISOString());
+      const started = local.flatMap(w => {
+        const s = byWorkout.get(w.id);
+        return !w.payload.completed && s?.scheduledOn === today ? [s] : [];
+      });
+      const completedAt = new Map<string, string>();
+      for (const value of [...local.map(w => w.payload), ...remote.map(w => w.data as WorkoutRecord)]) {
+        if (!value.completed || !value.completedAt) continue;
+        const prior = completedAt.get(value.prescriptionId);
+        if (!prior || Date.parse(value.completedAt) > Date.parse(prior)) completedAt.set(value.prescriptionId, value.completedAt);
+      }
+      const resumableIds = new Set(started.filter(s => canResumeWorkout(s, p)).map(s => s.workoutId));
+      if (plans.some(row => row.revision === 0 && row.payload.sessions.some(s => resumableIds.has(s.workoutId)))) {
+        throw Error('Sync this plan in Settings before replacing it so today’s workout can still sync.');
+      }
+      const recentActivity = [...completedAt.values()];
+      if (started.length || !historyComplete) recentActivity.push(now.toISOString());
+      p = futureProfile(p, recentActivity, now);
       let reason = 'Profile changed: regenerate future prescriptions; completed history retained.';
+      if (!historyComplete) {
+        if (p.startDate < nextMonday) p = { ...p, startDate: nextMonday };
+        reason = 'Workout history could not be refreshed. Your new schedule starts next week or later to allow recovery and protect this week’s time budget.';
+      }
+      let next = generate(p);
       const plannedMinutes = next.sessions.filter(s => inCurrentWeek(s.scheduledOn)).reduce((sum, s) => sum + s.minutes, 0);
       if (plannedMinutes > 0) {
         const sessions = new Map(plans.flatMap(row => row.payload.sessions.map(s => [s.prescriptionId, s] as const)));
-        let completedMinutes = 0;
-        for (const { payload } of completed) {
-          if (!payload.completedAt || !inCurrentWeek(localDate(new Date(payload.completedAt)))) continue;
-          const prescription = sessions.get(payload.prescriptionId) ?? await store.prescription<SavedSession>(owner, payload.prescriptionId);
-          completedMinutes += prescription.minutes;
+        const usedMinutes = new Map(started.map(s => [s.prescriptionId, s.minutes] as const));
+        for (const [id, date] of completedAt) {
+          if (!inCurrentWeek(localDate(new Date(date))) || usedMinutes.has(id)) continue;
+          const prescription = sessions.get(id) ?? await store.prescription<SavedSession>(owner, id);
+          usedMinutes.set(id, prescription.minutes);
         }
-        if (completedMinutes + plannedMinutes > p.weeklyMinutes) {
+        if (plannedMinutes + [...usedMinutes.values()].reduce((sum, minutes) => sum + minutes, 0) > p.weeklyMinutes) {
           p = { ...p, startDate: nextMonday };
           next = generate(p);
           reason = 'Profile changed. The new schedule starts next week to respect your weekly time budget.';
@@ -155,10 +196,12 @@ function Application() {
       }
       replacement = saveable(next, reason);
     }
+    if (currentOwner.current !== owner) return;
     const values: Parameters<typeof store.saveBatch>[1] = [{ kind: 'profile', payload: p, id: profiles[0]?.id ?? owner }];
     if (replacement) values.push({ kind: 'plan', payload: replacement, id: randomUUID() });
     await store.saveBatch(owner, values);
-    await read(owner); setEditProfile(false); setTab('Today');
+    await read(owner);
+    if (currentOwner.current === owner) { setSelectedSession(null); setEditProfile(false); setTab('Today'); }
   }
   async function finishSignOut(account: string) {
     // Repeat the erase until both protected storage and the local auth session are clear.
@@ -215,7 +258,6 @@ function Application() {
       }) },
     ]);
   }
-  const byWorkout = new Map(tab === 'Progress' ? plans.flatMap(p => p.payload.sessions.map(s => [s.workoutId, s] as const)) : []);
   const earlier = tab === 'Progress' ? (['0.2', '0.1'] as const).filter(version => jumps.some(j => j.payload.method === methods[version])) : [];
   const visibleMethod = progressMethod !== '0.3' && earlier.includes(progressMethod) ? progressMethod : '0.3';
   const recent = tab === 'Progress' ? compatible(jumps.map(j => j.payload), progressType, methods[visibleMethod]).reverse() : [];
@@ -262,12 +304,18 @@ function Application() {
         <Button title="Create account" disabled={busy || !configured} onPress={() => void action(async () => { if (password.length < 12) throw Error('Use at least 12 characters.'); const { error } = await supabase.auth.signUp({ email: email.trim(), password, options: { emailRedirectTo: AUTH_REDIRECT } }); if (error) throw Error('Signup could not finish. Check your email or try again later.'); setPassword(''); setMessage('Check your email to confirm your account on this iPhone.'); })} />
         <Button title="Recover password" disabled={busy || !configured} onPress={() => void action(async () => { const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: AUTH_REDIRECT }); if (error) throw Error('Recovery could not be sent. Try again later.'); setMessage('If that account exists, a recovery email has been sent. Open it on this iPhone.'); })} />
       </View> : recovering ? <View><Field label="New password (at least 12 characters)" secret value={password} onChange={setPassword} /><Button title="Update password" disabled={busy} onPress={() => void action(async () => { if (password.length < 12) throw Error('Use at least 12 characters.'); const { error } = await supabase.auth.updateUser({ password }); if (error) throw Error('Password update failed. Request a new recovery link.'); setPassword(''); setRecovering(false); })} /></View> : <View>
-        <View style={styles.row}>{(['Today', 'Analyze', 'Progress', 'Settings'] as const).map(t => <Button key={t} title={t} selected={t === tab} onPress={() => { setTab(t); setSelectedSession(null); }} />)}</View>
+        <View style={styles.row}>{(['Today', 'Analyze', 'Progress', 'Settings'] as const).map(t => <Button key={t} title={t} selected={t === tab} disabled={savingProfile} onPress={() => { setTab(t); setSelectedSession(null); }} />)}</View>
         {queue.length ? <Copy>{queue.length} local changes pending. Offline work stays on this iPhone. Use Settings to retry sync.</Copy> : null}
         {tab === 'Analyze' ? <Analyze key={owner} owner={owner!} onSaved={() => void read(owner!).catch(() => {
           if (currentOwner.current === owner) setMessage('Estimate saved. Refresh in Settings to reload Progress.');
         })} /> : null}
-        {tab === 'Today' ? !profile && profileUnknown ? <View><Copy>Reconnect to check for your existing training profile.</Copy><Button title="Retry loading profile" disabled={busy} onPress={() => void refresh()} /></View> : !profile || editProfile ? <ProfileForm key={owner} initial={profile} onSave={saveProfile} /> : selectedSession ? <View>
+        {tab === 'Today' ? !profile && profileUnknown ? <View><Copy>Reconnect to check for your existing training profile.</Copy><Button title="Retry loading profile" disabled={busy} onPress={() => void refresh()} /></View> : !profile || editProfile ? <View>
+          <ProfileForm key={owner} initial={profile} onSave={async value => {
+            setSavingProfile(true);
+            try { await saveProfile(value); } finally { setSavingProfile(false); }
+          }} />
+          {profile ? <Button title="Cancel profile edit" disabled={savingProfile} onPress={() => setEditProfile(false)} /> : null}
+        </View> : selectedSession ? <View>
           <Button title="Back to plan" onPress={() => setSelectedSession(null)} />
           <Workout key={selectedSession.workoutId} session={selectedSession} paused={Boolean(paused)} initial={workouts.find(w => w.id === selectedSession.workoutId)?.payload}
             onSave={async w => {
@@ -281,6 +329,7 @@ function Application() {
               if (currentOwner.current === owner) setQueue(pending);
             }} />
         </View> : <View><Copy heading>Your week</Copy>
+          {resumable && resumable.map(s => <Button key={s.workoutId} title={`Resume workout · ${s.scheduledOn} ${s.startHour}:00`} onPress={() => setSelectedSession(s)} />)}
           {profile.pain || paused ? <Copy>Training paused. Stop or modify for pain or unusual fatigue. Review your profile and seek qualified guidance when needed.</Copy> : plan ? <View><Copy>Week {plan.week} · {plan.explanation}</Copy>{plan.changeReason && plan.changeReason !== plan.explanation ? <Copy muted>{plan.changeReason}</Copy> : null}
             {plan.sessions.map(s => {
               const done = Boolean(workouts.find(w => w.id === s.workoutId)?.payload.completed);
@@ -327,8 +376,8 @@ function Application() {
             const s = byWorkout.get(w.id);
             return <Button key={w.id} title={`${w.payload.completed ? 'Completed' : 'In progress'} · ${new Date(w.payload.updatedAt).toLocaleDateString()} · ${w.payload.sets.filter(s => s.done).length} sets done`} onPress={() => void action(async () => {
               const prescription = s ?? await store.prescription<SavedSession>(owner, w.payload.prescriptionId);
-              if (!w.payload.completed && !plan?.sessions.some(session => session.workoutId === w.id)) {
-                throw Error('This session is from a previous plan. Its logged work is kept in history.');
+              if (!w.payload.completed && (!profile || paused || !canResumeWorkout(prescription, profile))) {
+                throw Error('Your current training profile pauses or restricts this workout. Its logged work is kept in history.');
               }
               if (!canOpenWorkout(prescription, w.payload.completed)) {
                 throw Error('This session is outside its scheduled day. Resume with the next eligible workout.');

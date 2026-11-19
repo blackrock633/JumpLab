@@ -48,6 +48,14 @@ export async function initialize(db: LocalDB) {
       WHERE json_extract(value,'$.kind')='plan' AND json_extract(value,'$.payload.profileRevision') IS NULL`);
     await tx.execAsync('PRAGMA user_version=2;');
   });
+  if ((version?.user_version ?? 0) < 3) await db.withExclusiveTransactionAsync(async tx => {
+    // Older versions marked these terminal using only local publication state.
+    await tx.runAsync(`UPDATE pending SET value=json_remove(json_set(value,'$.state','retry'),'$.message')
+      WHERE json_extract(value,'$.kind')='workout' AND json_extract(value,'$.state')='error'
+        AND json_extract(value,'$.message')=?`,
+      'Its prescription was never published. This workout is preserved in local history.');
+    await tx.execAsync('PRAGMA user_version=3;');
+  });
 }
 export const progressSeriesLimit = 100;
 export async function recentJumpRows(db: LocalDB, owner: string) {
@@ -173,9 +181,8 @@ export async function reconcileWrite(db: LocalDB, sent: Pending, next: Pending |
   });
 }
 
-// Keep logs for unpublished prescriptions on the device. A retry can publish
-// them only after the plan that owns the prescription has been acknowledged.
-export async function workoutPlanState(db: LocalDB, write: Pending): Promise<'ready' | 'waiting' | 'local-only'> {
+// Wait for queued plans, and verify superseded drafts whose acknowledgement may have been lost.
+export async function workoutPlanState(db: LocalDB, write: Pending): Promise<'ready' | 'waiting' | { verifyPrescription: string }> {
   if (write.kind !== 'workout') return 'ready';
   const prescriptionId = (write.payload as { prescriptionId?: string } | null)?.prescriptionId;
   if (!prescriptionId) return 'ready'; // The RPC validates the workout shape.
@@ -187,7 +194,7 @@ export async function workoutPlanState(db: LocalDB, write: Pending): Promise<'re
     ((id=? AND json_extract(value,'$.state') IN ('pending','retry','conflict')) OR
       (json_extract(value,'$.replacement.id')=? AND json_extract(value,'$.state') <> 'error'))
     LIMIT 1`, write.owner, plan.id, plan.id);
-  return queued ? 'waiting' : 'local-only';
+  return queued ? 'waiting' : { verifyPrescription: prescriptionId };
 }
 
 export async function markSignOut(db: LocalDB, owner: string) {

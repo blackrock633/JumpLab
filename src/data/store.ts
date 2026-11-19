@@ -192,7 +192,6 @@ async function syncPending(owner: string) {
       return pending?.value === JSON.stringify(w) ? workoutPlanState(db, w) : 'waiting';
     });
     if (planState === 'waiting') return 'deferred';
-    if (planState === 'local-only') return 'unpublished-plan';
     if (!isCurrent()) return 'unauthorized';
     const binding = w.kind === 'profile' && (w.payload as { planBinding?: boolean } | null)?.planBinding === true;
     const args = {
@@ -204,6 +203,15 @@ async function syncPending(owner: string) {
     const deadline = setTimeout(() => controller.abort(), 15_000);
     let response;
     try {
+      if (typeof planState === 'object') {
+        const { verifyPrescription } = planState;
+        const { data, error, status } = await client.from('prescriptions').select('id')
+          .eq('user_id', owner).eq('id', verifyPrescription).limit(1).abortSignal(controller.signal);
+        if (!isCurrent() || status === 401) return 'unauthorized';
+        if (error || !Array.isArray(data)) return 'transient';
+        if (data.length === 0) return 'unpublished-plan';
+        if (data[0]?.id !== verifyPrescription.toLowerCase()) return 'transient';
+      }
       response = await client.rpc('save_record', args).abortSignal(controller.signal);
     } finally { clearTimeout(deadline); }
     if (!isCurrent()) return 'unauthorized';

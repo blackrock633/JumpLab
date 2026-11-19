@@ -65,8 +65,10 @@ test.each(['remote', 'local'] as const)('conflicting profile and plan stay toget
     error: null, data: args.expected_revision === 2 || args.kind !== 'profile_plan' ? { revision: 3 } : { code: '40001' },
   }) }));
   let plansAvailable = choice !== 'remote';
+  const lookup = jest.fn(async () => ({ data: [], error: null, status: 200 }));
   const from = (table: string) => {
     const request = { select: () => request, eq: () => request, order: () => request, limit: () => request, filter: () => request,
+      abortSignal: lookup,
       maybeSingle: async () => table === 'plans' && !plansAvailable ? { error: { code: 'unavailable' }, data: null } :
         { error: null, data: table === 'plans' ? remotePlan : profileRow } };
     return request;
@@ -95,6 +97,7 @@ test.each(['remote', 'local'] as const)('conflicting profile and plan stay toget
   await store.sync('A');
   if (choice === 'remote') {
     expect(rpc).toHaveBeenCalledTimes(1);
+    expect(lookup).toHaveBeenCalledTimes(1);
     expect(await store.records('A', 'profile')).toEqual([expect.objectContaining({ payload: remoteProfile })]);
     expect(await store.records('A', 'plan')).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'draft', revision: 0 }), expect.objectContaining({ id: 'saved-plan', revision: 1 }),
@@ -106,6 +109,73 @@ test.each(['remote', 'local'] as const)('conflicting profile and plan stay toget
     expect(await store.records('A', 'plan')).toEqual([expect.objectContaining({ id: 'draft', revision: 1, payload: { ...localPlan, profileRevision: 3 } })]);
     expect(await store.pending('A')).toEqual([]);
   }
+});
+
+test('a workout syncs once when a second profile edit supersedes a published plan whose acknowledgement was lost', async () => {
+  await store.eraseLocalAccount('A');
+  await store.switchAccount('A', true);
+  const draft = (id: string, equipment: string) => store.saveBatch('A', [
+    { id: 'A', kind: 'profile', payload: { equipment } },
+    { id, kind: 'plan', payload: { sessions: [{ prescriptionId: id + '-prescription' }] } },
+  ]);
+  const workout = { prescriptionId: 'first-prescription', sets: [{ reps: 5 }] };
+  const published = new Set<string>();
+  const remoteWorkouts = new Map<string, unknown>();
+  const rpc = jest.fn((_name, args) => ({ abortSignal: async () => {
+    if (args.kind === 'profile_plan') {
+      if (args.payload.replacement.id === 'first') {
+        published.add('first-prescription');
+        throw Error('Lost acknowledgement after commit');
+      }
+      return { data: { code: '40001' }, error: null };
+    }
+    expect(args.kind).toBe('workout');
+    expect(published.has(args.payload.prescriptionId)).toBe(true);
+    remoteWorkouts.set(args.record_id, args.payload);
+    return { data: { revision: 1 }, error: null };
+  } }));
+  const filters = jest.fn((_column: string, _value: string) => prescriptions);
+  const lookup = jest.fn()
+    .mockResolvedValueOnce({ data: null, error: { code: '503' }, status: 503 })
+    .mockResolvedValueOnce({ data: null, error: null, status: 200 })
+    .mockImplementation(async () => ({
+      data: [...published].map(id => ({ id })), error: null, status: 200,
+    }));
+  const prescriptions = { select: () => prescriptions, eq: filters, limit: () => prescriptions, abortSignal: lookup };
+  const from = jest.fn((table: string) => {
+    expect(table).toBe('prescriptions');
+    return prescriptions;
+  });
+  jest.mocked(accountClient).mockResolvedValue({ client: { from, rpc }, isCurrent: () => true } as never);
+
+  await draft('first', 'barbell');
+  await store.save('A', 'workout', workout, 'first-log');
+  await store.sync('A');
+  expect(published.has('first-prescription')).toBe(true);
+  expect(from).not.toHaveBeenCalled();
+  expect(await store.records('A', 'plan')).toEqual([expect.objectContaining({ id: 'first', revision: 0 })]);
+  await draft('second', 'none');
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await store.sync('A');
+    expect(await store.pending('A')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'A', state: 'conflict', replacement: { id: 'second' } }),
+      expect.objectContaining({ id: 'first-log', state: 'retry' }),
+    ]));
+    expect(remoteWorkouts.size).toBe(0);
+  }
+  await store.sync('A');
+  await store.sync('A');
+  expect(from.mock.calls).toEqual([['prescriptions'], ['prescriptions'], ['prescriptions']]);
+  expect(filters.mock.calls).toEqual(Array.from({ length: 3 }, () => [
+    ['user_id', 'A'], ['id', 'first-prescription'],
+  ]).flat());
+  expect(rpc.mock.calls.filter(([, args]) => args.kind === 'workout')).toEqual([
+    ['save_record', expect.objectContaining({ record_id: 'first-log', expected_revision: 0, payload: workout })],
+  ]);
+  expect([...remoteWorkouts]).toEqual([['first-log', workout]]);
+  expect(await store.pending('A')).toEqual([expect.objectContaining({ id: 'A', state: 'conflict' })]);
+  expect(await store.records('A', 'workout')).toEqual([expect.objectContaining({ id: 'first-log', revision: 1, payload: workout })]);
 });
 
 test('keeping the saved profile cannot activate an earlier plan after a concurrent pain pause', async () => {

@@ -1,5 +1,32 @@
 # JumpLab implementation handoff
 
+## Round 5, stage S1, iteration 3
+
+Ran from `f1adb39` on 2026-11-18 (MST) with macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node v24.21.0 and npm 12.2.0. Commands started in the JumpLab root. The direct Xcode command uses the repository's DerivedData directory.
+
+| Command | Exit | Observed result |
+| --- | ---: | --- |
+| `test ! -e modules/jump-analysis/node_modules && test ! -e modules/jump-analysis/package-lock.json && git check-ignore modules/jump-analysis/package-lock.json` | 0 | Both generated artifacts remain absent. The nested lockfile path is ignored. |
+| `cd . && npm run -s typecheck` | 0 | TypeScript passed. |
+| `cd . && npm run -s lint` | 0 | Zero focused source check failures. |
+| `cd . && npx --no-install expo config --type public --json > /dev/null` | 0 | Expo public configuration resolved. |
+| `cd . && npm run test:unit` | 0 | 44 passed, zero skipped. |
+| `cd . && npm run test:ui` | 0 | 36 passed across five suites. |
+| `cd . && npm run test:native` | 0 | macOS synthetic detector, media and receipt tests passed. |
+| `cd . && npm run check:docs` | 0 | Documented paths and all 38 criterion IDs found. |
+| `cd . && npm run check:secrets` | 0 | Zero pattern matches across source, reachable Git patches and 155 existing client assets. |
+| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/../.cache/DerivedData" CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | CoreSimulator connection invalid. Xcode reported “JumpLab.xcworkspace is not a workspace file.” |
+| `cd . && npm run build:ios:simulator` | 1 | CocoaPods stopped at `cdn.cocoapods.org/all_pods_versions_a_9_3.txt` with “Couldn't resolve host name.” |
+| `xcrun simctl list devices available` | 1 | CoreSimulator returned “Connection refused.” |
+| `supabase --version`, `docker info`, `psql --version` | 127 each | All three commands were unavailable on PATH. |
+| `cd . && npm run test:integration`, `cd . && npm run test:security` | 2 each | Both stopped at the disposable-backend guard. Zero real client assertions ran. |
+| `cd . && npm run evaluate:video` | 2 | Zero annotated clips. Real-video accuracy remains unverified. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+The sync queue used local plan revision and queue state to decide whether a workout could sync. A second profile edit could remove the only local reference to an in-flight pair after the server had committed it. The queue now checks the exact prescription under the signed-in account when local publication is uncertain. A failed or incomplete lookup leaves the workout retryable. A successful empty result preserves it as local history. SQLite schema version 3 reopens workouts previously marked unpublished so the next sync can verify them.
+
+“A workout syncs once when a second profile edit supersedes a published plan whose acknowledgement was lost” exercises the production store with SQLite and simulated server responses. The profile-conflict test covers a successfully checked, unpublished prescription. “The queue upgrade reopens only workouts previously marked as unpublished” covers upgrades and preserves unrelated terminal errors. These checks advance JL-019 and JL-031. JL-015 and R5-03 still require a disposable Supabase CLI and container runtime to run the parity and paired rollback assertions. No real-video or device observations were added.
+
 ## Round 5, stage S1, iteration 2
 
 Ran from `06bd060` on 2026-11-18 (MST). The host reported macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node v24.21.0 and npm 12.2.0. Commands below started in the JumpLab repository root.
@@ -117,11 +144,11 @@ Host toolchain and exact setup commands are in [README](../README.md). The real-
 | JL-012 | Unverified | Native detached incremental decode and resource limits. The host suite checks specific cancellation, missing/oversized media and camera failures. Measure interruption and cleanup on iPhone and capture runtime traffic. |
 | JL-013 | Unverified | Profile UI, validation and program changes exercise host mocks. Paired queue tests preserve consistent conflict choices. Run profile edits and regeneration across two sessions on local Supabase and iOS. |
 | JL-014 | Local pass | Reproducible versioned plans with complete exercise prescriptions in training tests. |
-| JL-015 | Unverified | Personalization scenarios pass on the host. The linked migration binds plans to accepted profile revisions and checks key constraints. Apply the migration and run the two-client incompatible-plan tests. |
+| JL-015 | Blocked (disposable Supabase CLI and container runtime → run backend parity) | Host personalization scenarios pass. Run `npm run test:integration` after applying the migrations to exercise generated and adapted plans, tampered plans and the two-client conflicts. |
 | JL-016 | Local pass | Adaptation boundaries and final-day rollover pass in host tests. Today retains unstarted or partially completed final-day work. Missing sessions are left on their original dates. Real jump trends are excluded pending validation. |
 | JL-017 | Unverified | Pain and fatigue guards and completed-history immutability pass locally. Today can display the saved reason. Verify persisted adaptation reason and rule version on an applied backend. |
 | JL-018 | Unverified | SQLite restart tests and prescribed logging assertions pass on the host. Today retains final-day access. Process termination during logging and result saving remains untested on iOS. |
-| JL-019 | Unverified | Host tests exercise cached plan loading, SQLite restart, paired publication, conflict, and held dependent workout writes. Offline cold launch and reconnection require an installed iOS app and local backend. |
+| JL-019 | Unverified | Host tests cover SQLite restart, held dependent writes, lost plan acknowledgement after a superseding edit, failed lookup retry and recovery of misclassified workouts. Offline cold launch and reconnection require an installed iOS app and a local backend. |
 | JL-020 | Unverified | Account-bound dispatch and stable retry keys. Durable sign-out and A/B UI simulations pass. Run real lost-acknowledgement, concurrent RPC and account-switch flows. |
 | JL-021 | Unverified | Native missing/corrupt/oversized local input tests and cleanup pass on macOS. Verify provider references, interruptions and cleanup/reopen on iOS. |
 | JL-022 | Blocked | Three versioned migrations and provisional TypeScript definitions with FK relationships. Apply migrations on disposable Postgres, replace the provisional definitions with Supabase CLI output and pass check:database-types. |
@@ -133,7 +160,7 @@ Host toolchain and exact setup commands are in [README](../README.md). The real-
 | JL-028 | Unverified | Privacy/retention docs, no content logs in app source and limited pattern scan. Capture seeded flows and verify provider retention against actual project settings. |
 | JL-029 | Unverified | Today, Analyze, Progress and Settings use real app state and honest empty states. UI tests preserve final-day access. Simulator rendering and HIG review require a linked build. |
 | JL-030 | Unverified | Component light/dark contrast, roles, scalable text and target-size tests pass. Render at accessibility text sizes and inspect physical VoiceOver behavior. |
-| JL-031 | Unverified | Mocked UI and real host SQLite cover failure before erase intent, interrupted receipt and Auth cleanup, retry, and account switching. Test iOS interruption and recovery. |
+| JL-031 | Unverified | Mocked UI and real host SQLite cover failure before erase intent, interrupted receipt and Auth cleanup, account switching and retry after a failed prescription lookup. Test interruption and recovery on iOS. |
 | JL-032 | Unverified | Bounded compact chart reads and production analysis signposts are in source. No latency, memory, responsiveness or thermal observations were recorded. |
 | JL-033 | Blocked | Host unit, native and UI/store checks passed, including dependent writes and sign-out interruptions. Real database security and persistence assertions require a disposable backend. |
 | JL-034 | Failed | Fresh cached install passed. CocoaPods exited 1 before Xcode build. Complete native install with network/CMake, retain Podfile.lock and run simulator build and smoke on a host with CoreSimulator access. |

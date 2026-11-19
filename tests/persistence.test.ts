@@ -230,3 +230,27 @@ test('legacy independent plan writes remain local for review after the queue upg
   assert.match((await readPending(db, 'A'))[0]!.message!, /Edit your profile/);
   close();
 });
+
+test('the queue upgrade reopens only workouts previously marked as unpublished', async () => {
+  const { db, close } = adapter(':memory:');
+  await initialize(db); await changeAccount(db, 'A');
+  await db.execAsync('PRAGMA user_version=2');
+  for (const [id, message] of [
+    ['lost-ack', 'Its prescription was never published. This workout is preserved in local history.'],
+    ['invalid', 'Server rejected this record. Keep local data and review.'],
+  ] as const) {
+    await putLocal(db, 'A', 'workout', { prescriptionId: id, sets: [5] }, id);
+    const write = (await readPending(db, 'A', true)).find(row => row.id === id)!;
+    await reconcileWrite(db, write, { ...write, state: 'error', message });
+  }
+  await initialize(db);
+  const [recovered] = await readPending(db, 'A', true);
+  assert.deepEqual(recovered, { id: 'lost-ack', owner: 'A', kind: 'workout', revision: 0,
+    payload: { prescriptionId: 'lost-ack', sets: [5] }, state: 'retry', attempts: 0 });
+  assert.equal((await readPending(db, 'A')).find(row => row.id === 'invalid')?.state, 'error');
+  await reconcileWrite(db, recovered!, { ...recovered!, state: 'error',
+    message: 'Its prescription was never published. This workout is preserved in local history.' });
+  await initialize(db);
+  assert.deepEqual(await readPending(db, 'A', true), []);
+  close();
+});

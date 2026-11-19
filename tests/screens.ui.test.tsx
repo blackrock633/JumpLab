@@ -71,6 +71,18 @@ test('picker cancellation and each jump type remain usable', async () => {
   await screen.findByText(/Import cancelled/);
   expect(Native.analyze).not.toHaveBeenCalled(); expect(commitAnalysis).not.toHaveBeenCalled();
 });
+test('picker rejection explains restricted access or unsupported media and allows retry', async () => {
+  const clip = { id: 'retry-clip', playbackFPS: 120, duration: 3, bytes: 1000, hasRetiming: false };
+  jest.mocked(Native.pick).mockRejectedValueOnce(Error('Photos access restricted')).mockResolvedValueOnce(clip);
+  await render(<Analyze owner="A" onSaved={jest.fn()} />);
+  await fireEvent.press(screen.getByRole('button', { name: 'Choose video' }));
+  await screen.findByText(/Video unavailable or unsupported.*If Photos access is restricted, review Settings and try again/);
+  expect(Native.analyze).not.toHaveBeenCalled();
+  expect(commitAnalysis).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByRole('button', { name: 'Choose video' }));
+  expect((await screen.findByLabelText('Original recording FPS')).props.value).toBe('120');
+  expect(Native.pick).toHaveBeenCalledTimes(2);
+});
 function testReceipt(timestamps: number[]): AnalysisReceipt {
   return { id: 'clip', ids: ['jump'], type: 'standing', fps: 60, confirmed: true, createdAt: '2026-11-17T00:00:00Z',
     analysis: { timestamps, playbackFPS: 60, events: [{ takeoff: [timestamps[30]!, timestamps[31]!], landing: [timestamps[54]!, timestamps[55]!] }], elapsedSeconds: 1, decodedFrames: 120, peakResidentBytes: 1000 } };

@@ -10,7 +10,7 @@ import { Workout, type WorkoutRecord, type SavedSession } from './src/screens/Wo
 import { AUTH_REDIRECT, configured, eraseDeletedSession, offlineSessionOwner, supabase } from './src/data/auth';
 import * as store from './src/data/store';
 import { progressSeriesLimit } from './src/data/local';
-import { adapt, canOpenWorkout, canPrepareNextWeek, completedPrescription, futureProfile, generate, localDate, type Plan, type Profile } from './src/core/training';
+import { adapt, canOpenWorkout, canPrepareNextWeek, completedPrescription, futureProfile, generate, localDate, trainingWeekStart, type Plan, type Profile } from './src/core/training';
 import { compatible, displayHeight, LEGACY_METHOD, METHOD, PREVIOUS_METHOD, type JumpResult, type JumpType } from './src/core/measurement';
 import { recoveryCode } from './src/core/auth-link';
 import { selectActivePlan } from './src/core/queue';
@@ -128,9 +128,35 @@ function Application() {
   }
   async function saveProfile(p: Profile) {
     if (!owner) return;
-    p = futureProfile(p, workouts.filter(w => w.payload.completed).map(w => w.payload.completedAt));
+    const now = new Date();
+    const completed = workouts.filter(w => w.payload.completed);
+    p = futureProfile(p, completed.map(w => w.payload.completedAt), now);
+    let replacement: SavedPlan | undefined;
+    if (!p.pain) {
+      const monday = trainingWeekStart(localDate(now));
+      const nextMonday = trainingWeekStart(monday, 1);
+      const inCurrentWeek = (date: string) => date >= monday && date < nextMonday;
+      let next = generate(p);
+      let reason = 'Profile changed: regenerate future prescriptions; completed history retained.';
+      const plannedMinutes = next.sessions.filter(s => inCurrentWeek(s.scheduledOn)).reduce((sum, s) => sum + s.minutes, 0);
+      if (plannedMinutes > 0) {
+        const sessions = new Map(plans.flatMap(row => row.payload.sessions.map(s => [s.prescriptionId, s] as const)));
+        let completedMinutes = 0;
+        for (const { payload } of completed) {
+          if (!payload.completedAt || !inCurrentWeek(localDate(new Date(payload.completedAt)))) continue;
+          const prescription = sessions.get(payload.prescriptionId) ?? await store.prescription<SavedSession>(owner, payload.prescriptionId);
+          completedMinutes += prescription.minutes;
+        }
+        if (completedMinutes + plannedMinutes > p.weeklyMinutes) {
+          p = { ...p, startDate: nextMonday };
+          next = generate(p);
+          reason = 'Profile changed. The new schedule starts next week to respect your weekly time budget.';
+        }
+      }
+      replacement = saveable(next, reason);
+    }
     const values: Parameters<typeof store.saveBatch>[1] = [{ kind: 'profile', payload: p, id: profiles[0]?.id ?? owner }];
-    if (!p.pain) values.push({ kind: 'plan', payload: saveable(generate(p), 'Profile changed: regenerate future prescriptions; completed history retained.'), id: randomUUID() });
+    if (replacement) values.push({ kind: 'plan', payload: replacement, id: randomUUID() });
     await store.saveBatch(owner, values);
     await read(owner); setEditProfile(false); setTab('Today');
   }

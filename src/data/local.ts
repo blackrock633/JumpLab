@@ -69,9 +69,18 @@ export async function recentJumpRows(db: LocalDB, owner: string) {
     FROM ranked JOIN records r ON r.id=ranked.id WHERE ranked.position<=?`, owner, progressSeriesLimit);
 }
 export async function readPending(db: LocalDB, owner: string, sendable = false): Promise<Pending[]> {
+  // Queued parents can publish earlier in the same batch. Conflicted parents
+  // require user action, so their workouts must not consume dispatch slots.
   const sql = sendable
-    ? `SELECT value FROM pending WHERE owner=? AND json_extract(value,'$.state') IN ('pending','retry')
-        ORDER BY CASE WHEN json_extract(value,'$.kind') IN ('profile','plan') THEN 0 ELSE 1 END,rowid LIMIT 60`
+    ? `SELECT w.value FROM pending w WHERE w.owner=?1 AND json_extract(w.value,'$.state') IN ('pending','retry')
+        AND NOT COALESCE(json_extract(w.value,'$.kind')='workout' AND json_extract(w.value,'$.payload.prescriptionId') IN (
+          SELECT json_extract(s.value,'$.prescriptionId') FROM pending q JOIN records r ON r.owner=q.owner
+            AND (q.id=r.id OR json_extract(q.value,'$.replacement.id')=r.id)
+          JOIN json_each(r.payload,'$.sessions') s
+          WHERE q.owner=?1 AND r.kind='plan' AND r.revision<=0
+            AND json_extract(q.value,'$.state')='conflict'
+        ),0)
+        ORDER BY CASE WHEN json_extract(w.value,'$.kind') IN ('profile','plan') THEN 0 ELSE 1 END,w.rowid LIMIT 60`
     : 'SELECT value FROM pending WHERE owner=? ORDER BY rowid';
   return (await db.getAllAsync<{ value: string }>(sql, owner)).map(r => JSON.parse(r.value) as Pending);
 }

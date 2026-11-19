@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { adapt, canPrepareNextWeek, completedPrescription, futureProfile, generate, kg, validateLog, validateProfile } from '../src/core/training.ts';
-import { feasibleProfiles, good, infeasibleProfiles, profile } from './fixtures/profiles.ts';
+import { comfortableWorkouts, feasibleProfiles, good, infeasibleProfiles, profile } from './fixtures/profiles.ts';
 test('same normalized profile/rules produce identical complete prescriptions', () => {
   assert.deepEqual(generate(profile), generate(feasibleProfiles.reorderedDays));
   for (const s of generate(profile).sessions) for (const e of s.exercises) {
@@ -29,12 +29,12 @@ test('infeasible inputs and pain return actionable explanations', () => {
 test('adaptation holds missing/noisy observations; capped load only after 3 comfortable sessions', () => {
   const plan = generate(feasibleProfiles.progression);
   assert.deepEqual(adapt(plan, [], null).plan.sessions.map(s => s.exercises), plan.sessions.map(s => s.exercises));
-  const next = adapt(plan, [good, good, good], null);
+  const next = adapt(plan, comfortableWorkouts, null);
   assert.equal(next.plan.sessions[0]!.exercises[0]!.loadKg, 41);
   assert.equal(next.plan.sessions[0]!.exercises[1]!.sets, plan.sessions[0]!.exercises[1]!.sets);
   const noisy = adapt(plan, [good], { validated: false, typeCompatible: true, count: 1, changeFraction: 0.5 });
   assert.equal(noisy.plan.sessions[0]!.exercises[0]!.loadKg, 40);
-  const incompatible = adapt(plan, [good, good, good], { validated: true, typeCompatible: false, count: 3, changeFraction: -0.2 });
+  const incompatible = adapt(plan, comfortableWorkouts, { validated: true, typeCompatible: false, count: 3, changeFraction: -0.2 });
   assert.equal(incompatible.plan.sessions[0]!.exercises[0]!.loadKg, 41);
 });
 test('pain/fatigue guards, deload, reductions and history immutability', () => {
@@ -56,13 +56,17 @@ test('logging accepts only existing prescribed sets and validates limits', () =>
   validateLog(s, [valid]);
   for (const logs of [[{ ...valid, exerciseId: 'outside-workout' }], [valid, valid], [{ ...valid, index: 20 }], [{ ...valid, reps: NaN }], [{ ...valid, loadKg: -1 }]]) assert.throws(() => validateLog(s, logs));
 });
-test('old or duplicated workout feedback cannot repeatedly escalate loads', () => {
+test('unidentified, old or duplicated workout feedback cannot escalate loads', () => {
   const plan = generate(feasibleProfiles.progression);
-  const observations = ['a', 'b', 'c'].map(id => ({ ...good, id }));
+  const observations = comfortableWorkouts;
   const progressed = adapt(plan, observations, null).plan;
   assert.equal(progressed.sessions[0]!.exercises[0]!.loadKg, 41);
+  assert.deepEqual(progressed.usedObservationIds, observations.map(o => o.id));
   assert.equal(adapt(progressed, observations, null).plan.sessions[0]!.exercises[0]!.loadKg, 41);
   assert.equal(adapt(plan, [observations[0]!, observations[0]!, observations[0]!], null).plan.sessions[0]!.exercises[0]!.loadKg, 40);
+  assert.equal(adapt(plan, [good, good, good], null).plan.sessions[0]!.exercises[0]!.loadKg, 40);
+  assert.equal(adapt(plan, [observations[0]!, observations[1]!, good], null).plan.sessions[0]!.exercises[0]!.loadKg, 40);
+  assert.equal(adapt(plan, [observations[0]!, observations[1]!, { ...observations[0]!, id: observations[0]!.id.toUpperCase() }], null).plan.sessions[0]!.exercises[0]!.loadKg, 40);
   assert.throws(() => adapt(plan, [{ ...good, effort: NaN }], null), /feedback/);
 });
 test('repeated load increases stay within the server and workout logging range', () => {

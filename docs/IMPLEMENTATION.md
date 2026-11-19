@@ -1,5 +1,38 @@
 # JumpLab implementation handoff
 
+## Round 5, stage S1, iteration 2
+
+Verified from `025469a` on 2026-11-19 (MST). Commands start in the JumpLab root unless the command changes directories. Earlier logs below are historical.
+
+| Command | Exit | Observed result |
+| --- | ---: | --- |
+| `test ! -e modules/jump-analysis/node_modules && test ! -e modules/jump-analysis/package-lock.json && git check-ignore modules/jump-analysis/package-lock.json` | 0 | Both generated paths were absent. The nested lockfile path is ignored. |
+| `mkdir modules/jump-analysis/node_modules && (trap 'rmdir modules/jump-analysis/node_modules' EXIT; sh scripts/build-ios.sh)` | 3 | The guard printed the nested path and duplicate React Native warning, then exited before CocoaPods. |
+| `cd . && npm run -s typecheck` | 0 | TypeScript passed. |
+| `cd . && npm run -s lint` | 0 | Zero source check failures. |
+| `cd . && npx --no-install expo config --type public --json > /dev/null` | 0 | Expo public configuration resolved. |
+| `cd . && npm run test:unit` | 0 | 46 passed, zero skipped. |
+| `cd . && npm run test:ui` | 0 | 43 passed across five suites using native and Auth mocks where applicable. |
+| `cd . && npm run test:native` | 0 | macOS synthetic transition, timing, media and receipt checks passed. |
+| `cd . && npm run check:docs` | 0 | Documented paths and all 38 criterion IDs found. |
+| `cd . && npm run check:secrets` | 0 | Zero pattern matches across source, reachable Git patches and 155 existing client assets. |
+| `xcrun simctl list devices available` | 1 | CoreSimulator refused the connection. |
+| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ~/agentloop/derived/e177760763b1 CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | CoreSimulator connection invalid. Xcode reported “JumpLab.xcworkspace is not a workspace file.” The workspace file exists. The prior independent build passed. |
+| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/../.cache/DerivedData" CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | Using repository-local DerivedData produced the same errors. |
+| `cd . && npm run build:ios:simulator` | 1 | CocoaPods stopped at `cdn.cocoapods.org/all_pods_versions_a_9_3.txt` with “Couldn't resolve host name.” Xcode was not reached. |
+| `supabase --version`, `docker info`, `psql --version` | 127 each | Commands unavailable on PATH. |
+| `node --check scripts/backend-test.mjs` | 0 | Backend test script parsed. |
+| `cd . && npm run test:integration`, `cd . && npm run test:security` | 2 each | Disposable-environment guard stopped both suites. Zero live assertions. |
+| `cd . && npm run evaluate:video` | 2 | Zero consented annotated clips. Real-video accuracy remains unverified. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+- JL-013 and JL-015. “Editing Monday availability to Friday after completing a workout respects a 25-minute weekly budget” verifies that a completed 25-minute Monday workout stays in history and the replacement begins the following Friday. The 50-minute case keeps the replacement on the current Friday. Replacement counts prescribed minutes in the current local Monday–Sunday week. If the plan would exceed the remaining budget, the entire replacement moves to the following week so its normal session count and progression are preserved. This check uses available account history.
+- JL-016 and R5-02. “Unidentified, old or duplicated workout feedback cannot escalate loads” checks holds for missing, duplicate, differently cased and previously used identities. The successful increase records three distinct workout UUIDs. The backend parity fixture uses those UUIDs and asserts that the rollover payload includes them. Pain and fatigue still pause training with incomplete feedback.
+- JL-019. “An independent jump syncs behind 60 workouts waiting on conflicting plans” runs production SQLite queue selection and acknowledgement. The jump is acknowledged and the 60 workouts remain intact. The conflict-resolution tests also verify that a workout can sync in the same batch after its pending parent is acknowledged.
+- JL-031. “Picker rejection explains restricted access or unsupported media and allows retry” checks the import hint and FPS prefill on retry. “Failed password login protects private cached work and a successful retry reopens it” checks that the failed login leaves the private cache locked and that the correct account can reopen it.
+
+R5-02 and R5-03 still need live evidence from a disposable Supabase stack with the migrations applied. No iPhone installation, real athlete clip run, or physical-device measurement was performed.
+
 ## Round 5, stage S1, current checkout
 
 Verified from `2a1b51d` on 2026-11-19 (MST). The Mac reported macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Swift 6.2.4, CocoaPods 1.17.0, Node v24.21.0 and npm 12.2.0. Commands started in the JumpLab root. The direct Xcode command changes into `ios`.

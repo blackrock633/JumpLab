@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { adapt, generate } from '../src/core/training.ts';
 import { measurement } from '../src/core/measurement.ts';
-import { feasibleProfiles, good, infeasibleProfiles } from '../tests/fixtures/profiles.ts';
+import { comfortableWorkouts, feasibleProfiles, infeasibleProfiles } from '../tests/fixtures/profiles.ts';
 const base = process.env.JUMPLAB_TEST_URL;
 const key = process.env.JUMPLAB_TEST_PUBLIC_KEY;
 const setupKey = process.env.JUMPLAB_TEST_SETUP_KEY;
@@ -196,12 +196,13 @@ try {
     let prior = generated;
     for (const [variant, feedback, reason] of [
       ['hold', [], /^Hold:/],
-      ['increase', [good, good, good], /^Three comfortable/],
+      ['increase', comfortableWorkouts, /^Three comfortable/],
       ['deload', [], /^Planned deload:/],
     ]) {
       const next = adapt(prior, feedback, null);
       assert.match(next.reason, reason, `${name}: adaptation exercises the ${variant} rule`);
       const payload = buildPlan(next.plan, profileRevision, next.reason);
+      if (variant === 'increase') assert.deepEqual(payload.usedObservationIds, feedback.map(o => o.id));
       const planId = randomUUID();
       const rollover = await rpc(parity.token, 'plan', planId, payload);
       check(rollover.ok && rollover.data === 1, `${name}: ${variant} rollover accepted for the saved profile revision`);

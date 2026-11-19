@@ -62,6 +62,38 @@ test('terminal writes cannot starve later sendable records', async () => {
   close();
 });
 
+test('an independent jump syncs behind 60 workouts waiting on conflicting plans', async () => {
+  const { db, close } = adapter(':memory:');
+  try {
+    await initialize(db); await changeAccount(db, 'A');
+    const profile = { kind: 'profile' as const, id: 'A', payload: {} };
+    await putBatch(db, 'A', [profile]);
+    const [savedProfile] = await readPending(db, 'A', true);
+    await reconcileWrite(db, savedProfile!, null, 1);
+    const plan = (i: number) => ({ kind: 'plan' as const, id: `plan-${i}`,
+      payload: { profileRevision: 1, sessions: [{ prescriptionId: `prescription-${i}` }] } });
+    for (let i = 0; i < 59; i++) await putBatch(db, 'A', [plan(i)]);
+    await putBatch(db, 'A', [profile, plan(59)]);
+    for (const parent of await readPending(db, 'A', true)) {
+      await reconcileWrite(db, parent, { ...parent, state: 'conflict' });
+    }
+    for (let i = 0; i < 60; i++) {
+      await putLocal(db, 'A', 'workout', { prescriptionId: `prescription-${i}`, sets: [5] }, `workout-${i}`);
+    }
+    await putLocal(db, 'A', 'jump', { heightM: 0.25 }, 'independent-jump');
+    const before = await readPending(db, 'A');
+    const sent: string[] = [];
+    await drain('A', await readPending(db, 'A', true), async write => {
+      if (await workoutPlanState(db, write) === 'waiting') return 'deferred';
+      sent.push(write.id);
+      return 'ok';
+    }, (_id, next, write) => reconcileWrite(db, write, next, 1));
+    assert.deepEqual(sent, ['independent-jump']);
+    assert.deepEqual(await readPending(db, 'A'), before.filter(write => write.kind !== 'jump'));
+    assert.equal((await db.getFirstAsync<{ revision: number }>("SELECT revision FROM records WHERE id='independent-jump'"))?.revision, 1);
+  } finally { close(); }
+});
+
 test('date-scoped chart cache retains older in-range records and omits full frame traces', async () => {
   const { db, close } = adapter(':memory:'); await initialize(db); await changeAccount(db, 'A');
   const now = new Date();

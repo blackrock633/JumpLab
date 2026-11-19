@@ -28,6 +28,11 @@ export function validDate(value: string) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 }
 export function localDate(d = new Date()) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+export function trainingWeekStart(date: string, weeksAhead = 0) {
+  const monday = new Date(`${date}T12:00:00Z`);
+  monday.setUTCDate(monday.getUTCDate() - (monday.getUTCDay() + 6) % 7 + weeksAhead * 7);
+  return monday.toISOString().slice(0, 10);
+}
 export function canPrepareNextWeek<T extends Pick<Session, 'scheduledOn'>>(
   sessions: readonly T[], completed: (session: T) => boolean, now = new Date(),
 ) {
@@ -89,15 +94,23 @@ export function adapt(plan: Plan, observations: Feedback[], reliableTrends: { ty
   if (observations.some(o => (o.effort !== null && (!Number.isInteger(o.effort) || o.effort < 1 || o.effort > 10)) ||
     (o.recovery !== null && !['good', 'fatigued'].includes(o.recovery)))) throw Error('Check effort and recovery feedback.');
   if (schedule && !validDate(schedule.notBefore)) throw Error('Invalid next-week start date.');
-  const fresh = observations.filter((o, i, all) => !o.id || (!plan.usedObservationIds?.includes(o.id) && all.findIndex(x => x.id === o.id) === i));
+  const usedIds = new Set(plan.usedObservationIds?.map(id => id.toLowerCase()));
+  const fresh = new Map<string, Feedback>();
+  for (const observation of observations) {
+    const id = observation.id?.toLowerCase();
+    if (id && !usedIds.has(id) && !fresh.has(id)) fresh.set(id, observation);
+  }
   const comfortable = (o: Feedback) => o.completed && o.effort !== null && o.effort <= 6 && o.recovery === 'good';
-  const deloadFeedback = fresh.filter(o => o.id && schedule?.deloadIds.includes(o.id));
+  const deloadFeedback = (schedule?.deloadIds ?? []).flatMap(id => {
+    const observation = fresh.get(id.toLowerCase());
+    return observation ? [observation] : [];
+  });
   const restoreVolume = plan.week % 4 === 0 && deloadFeedback.length > 0 && deloadFeedback.every(comfortable);
   let factor = 1, reason = 'Hold: insufficient evidence; missing sessions are not failures.';
   if (observations.some(o => o.pain || o.recovery === 'fatigued')) { factor = 0; reason = 'Stop/modify: pain or unusual fatigue. No automatic escalation; review before resuming.'; }
   else if (plan.week % 4 === 3) { factor = 0.5; reason = 'Planned deload: reduce future sets; no catch-up sessions.'; }
   else if (restoreVolume) { reason = 'Return to baseline volume after deload; hold loads.'; }
-  else if (plan.week % 4 !== 0 && fresh.length >= 3 && fresh.slice(-3).every(comfortable)) {
+  else if (plan.week % 4 !== 0 && fresh.size >= 3 && [...fresh.values()].slice(-3).every(comfortable)) {
     // Experimental measurements are deliberately excluded. Trends can hold/reduce, never accelerate progression.
     if (reliableTrends?.validated && reliableTrends.typeCompatible && reliableTrends.count >= 3 && reliableTrends.changeFraction < -0.05) {
       factor = 0.8; reason = 'Reduce future volume: repeated compatible validated decline.';
@@ -106,7 +119,7 @@ export function adapt(plan: Plan, observations: Feedback[], reliableTrends: { ty
   const oneWeek = 7 * 86400000;
   const earliest = Math.min(...plan.sessions.map(s => Date.parse(s.scheduledOn)));
   const weeksToMove = Math.max(1, schedule ? Math.ceil((Date.parse(schedule.notBefore) - earliest) / oneWeek) : 1);
-  const next: Plan = { ...plan, version: RULES, usedObservationIds: factor !== 1 || restoreVolume ? [...new Set([...(plan.usedObservationIds ?? []), ...fresh.flatMap(o => o.id ? [o.id] : [])])].slice(-1000) : plan.usedObservationIds,
+  const next: Plan = { ...plan, version: RULES, usedObservationIds: factor !== 1 || restoreVolume ? [...usedIds, ...fresh.keys()].slice(-1000) : plan.usedObservationIds,
     week: plan.week + 1, sessions: plan.sessions.map(s => ({ ...s, id: `w${plan.week + 1}-d${s.day}`, scheduledOn: new Date(Date.parse(s.scheduledOn) + weeksToMove * oneWeek).toISOString().slice(0, 10), exercises: s.exercises.map(e => ({ ...e,
     sets: factor === 0 ? 0 : factor < 1 ? e.sets === 0 ? 0 : Math.max(1, Math.floor(e.sets * factor)) : restoreVolume ? e.baseSets : e.sets,
     reps: factor > 1 && e.loadKg === null && e.id !== 'jump' ? Math.min(e.reps + 1, 8) : e.reps,

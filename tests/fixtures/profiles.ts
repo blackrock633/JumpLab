@@ -25,3 +25,4 @@ export const infeasibleProfiles: Profile[] = [
 ];
 
 export const good: Feedback = { completed: true, effort: 5, recovery: 'good', pain: false };
+export const comfortableWorkouts = [1, 2, 3].map(index => ({ ...good, id: `a09a1b00-25d8-4ef8-96b0-400b846238e${index}` }));

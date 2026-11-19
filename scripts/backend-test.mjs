@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { adapt, generate } from '../src/core/training.ts';
 import { measurement } from '../src/core/measurement.ts';
 import { feasibleProfiles, good, infeasibleProfiles } from '../tests/fixtures/profiles.ts';
@@ -249,15 +250,18 @@ try {
   };
   const rejectedPair = await rpc(rollback.token, 'profile_plan', rollback.id, invalidReplacement, 1);
   check(!rejectedPair.ok && rejectedPair.data?.code === '22023', 'paired publication rejects a structurally valid replacement containing forbidden impact');
-  const [before, plansAfter, prescriptionsAfter] = await Promise.all([
+  const [profileAfter, plansAfter, prescriptionsAfter, adaptationsAfter] = await Promise.all([
     request('/rest/v1/profiles?select=revision,data', rollback.token),
     request(`/rest/v1/plans?select=id&id=eq.${rollbackId}`, rollback.token),
     request(`/rest/v1/prescriptions?select=id&plan_id=eq.${rollbackId}`, rollback.token),
+    request(`/rest/v1/adaptations?select=id&plan_id=eq.${rollbackId}`, rollback.token),
   ]);
-  check(before.ok && before.data.length === 1 && before.data[0].revision === 1 &&
-    before.data[0].data.limitation === profile.limitation, 'paired rollback preserves original profile revision and limitation');
+  check(profileAfter.ok && Array.isArray(profileAfter.data) && profileAfter.data.length === 1 &&
+    profileAfter.data[0].revision === 1, 'paired rollback preserves original profile revision');
+  check(isDeepStrictEqual(profileAfter.data[0].data, profile), 'paired rollback preserves all saved profile answers and binding');
   check(plansAfter.ok && plansAfter.data.length === 0, 'paired rollback leaves no replacement plan');
   check(prescriptionsAfter.ok && prescriptionsAfter.data.length === 0, 'paired rollback leaves no replacement prescriptions');
+  check(adaptationsAfter.ok && adaptationsAfter.data.length === 0, 'paired rollback leaves no replacement adaptation reason');
   const rollbackQuota = await Promise.all(Array.from({ length: 59 }, () => rpc(rollback.token, 'plan', randomUUID(), {})));
   check(Math.floor(Date.now() / 60000) === rollbackBucket, 'paired rollback quota probe stayed in one window');
   check(rollbackQuota.filter(r => r.data?.code === '22023').length === 58 &&

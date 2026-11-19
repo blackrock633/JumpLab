@@ -52,6 +52,54 @@ test('a stalled profile refresh leaves local workout saves responsive and protec
   expect(await store.pending('B')).toEqual([]);
 });
 
+test('a rejected profile_plan RPC leaves a single terminal pair and no active draft', async () => {
+  await store.eraseLocalAccount('B');
+  await store.switchAccount('A', true);
+  const profile = { limitation: 'no-impact' };
+  const replacement = { id: 'rejected-plan', payload: { profileRevision: 1, sessions: [] } };
+  const rpc = jest.fn(() => ({ abortSignal: async () => ({ data: { code: '22023' }, error: null }) }));
+  jest.mocked(accountClient).mockResolvedValue({ client: { rpc }, isCurrent: () => true } as never);
+
+  await store.saveBatch('A', [
+    { kind: 'profile', id: 'A', payload: profile },
+    { kind: 'plan', ...replacement },
+  ]);
+  await store.sync('A');
+  await store.sync('A');
+
+  expect(rpc).toHaveBeenCalledTimes(1);
+  expect(rpc).toHaveBeenCalledWith('save_record', {
+    kind: 'profile_plan', record_id: 'A', expected_revision: 0,
+    payload: { profile: { ...profile, planBinding: true }, replacement },
+  });
+  const queue = await store.pending('A');
+  expect(queue).toEqual([
+    expect.objectContaining({ id: 'A', kind: 'profile', state: 'error', replacement: { id: replacement.id } }),
+  ]);
+  const [savedProfile] = await store.records<{ planBinding?: boolean }>('A', 'profile');
+  const plans = await store.records<{ profileRevision?: number }>('A', 'plan');
+  expect(plans).toEqual([expect.objectContaining({ id: replacement.id, revision: 0 })]);
+  expect(selectActivePlan(plans, savedProfile, queue)).toBeUndefined();
+});
+
+test('a pending sign-out blocks account B until device erasure completes', async () => {
+  await store.switchAccount('A', true);
+  await store.save('A', 'workout', { sets: [5] }, 'private-log');
+  await store.beginSignOut('A');
+
+  await expect(store.records('A', 'workout')).rejects.toThrow('Account changed');
+  await expect(store.switchAccount('B', true)).rejects.toThrow('Finish erasing');
+  await store.eraseLocalAccount('A');
+  expect(await store.signOutStatus()).toEqual({ owner: 'A' });
+  await expect(store.switchAccount('B', true)).rejects.toThrow('Finish erasing');
+
+  await store.clearSignOut('A');
+  await store.switchAccount('B');
+  expect(await store.records('B', 'workout')).toEqual([]);
+  expect(await store.pending('B')).toEqual([]);
+  await expect(store.records('A', 'workout')).rejects.toThrow('Account changed');
+});
+
 test.each(['remote', 'local'] as const)('conflicting profile and plan stay together when keeping the %s version', async choice => {
   await store.eraseLocalAccount('A');
   await store.switchAccount('A', true);

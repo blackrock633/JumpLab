@@ -65,6 +65,16 @@ test('old or duplicated workout feedback cannot repeatedly escalate loads', () =
   assert.equal(adapt(plan, [observations[0]!, observations[0]!, observations[0]!], null).plan.sessions[0]!.exercises[0]!.loadKg, 40);
   assert.throws(() => adapt(plan, [{ ...good, effort: NaN }], null), /feedback/);
 });
+test('repeated load increases stay within the server and workout logging range', () => {
+  let plan = generate(feasibleProfiles.maximumKnownSquat);
+  for (let week = 0; week < 100; week++) {
+    const feedback = [0, 1, 2].map(index => ({ ...good, id: `week-${week}-${index}` }));
+    plan = adapt(plan, feedback, null).plan;
+  }
+  const session = plan.sessions[0]!;
+  assert.equal(session.exercises[0]!.loadKg, 500);
+  validateLog(session, [{ exerciseId: 'squat', index: 0, reps: 6, loadKg: 500, done: true }]);
+});
 test('profile replacement never backdates a plan or removes recovery after completed work', () => {
   const now = new Date(2026, 10, 17, 12);
   const completed = new Date(2026, 10, 16, 23).toISOString();

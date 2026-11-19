@@ -1,5 +1,40 @@
 # JumpLab implementation handoff
 
+## Round 5, stage S1, current checkout
+
+Verified from `2a1b51d` on 2026-11-19 (MST). The Mac reported macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Swift 6.2.4, CocoaPods 1.17.0, Node v24.21.0 and npm 12.2.0. Commands started in the JumpLab root. The direct Xcode command changes into `ios`.
+
+| Command | Exit | Observed result |
+| --- | ---: | --- |
+| `find modules/jump-analysis/node_modules -depth -delete && unlink modules/jump-analysis/package-lock.json` | 0 | Removed the regenerated module dependencies and lockfile. |
+| `test ! -e modules/jump-analysis/node_modules && test ! -e modules/jump-analysis/package-lock.json && git check-ignore modules/jump-analysis/package-lock.json` | 0 | Both paths were absent and the nested lockfile path was ignored. |
+| `mkdir modules/jump-analysis/node_modules && (trap 'rmdir modules/jump-analysis/node_modules' EXIT; sh scripts/build-ios.sh)` | 3 | Printed “Nested module install found at modules/jump-analysis/node_modules; remove it (duplicate react-native breaks autolinking).” |
+| `node --version`, `npm --version`, `sw_vers`, `xcodebuild -version`, `pod --version`, `swift --version` | 0 each | Reported the toolchain versions above. |
+| `cd . && npm run -s typecheck` | 0 | TypeScript passed. |
+| `cd . && npm run -s lint` | 0 | Zero source check failures. |
+| `cd . && npx --no-install expo config --type public --json > /dev/null` | 0 | Expo public configuration resolved. |
+| `cd . && npm run test:unit` | 0 | 45 passed, zero skipped. |
+| `cd . && npm run test:ui` | 0 | 39 passed across five suites. |
+| `cd . && npm run check:docs` | 0 | Documented paths and all 38 criterion IDs found. |
+| `cd . && npm run test:native` | 0 | macOS synthetic detector, timing, media and receipt tests passed. |
+| `xcrun simctl list devices available` | 1 | CoreSimulator connection refused. |
+| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ~/agentloop/derived/e177760763b1 CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | CoreSimulator connection invalid. Xcode also reported “JumpLab.xcworkspace is not a workspace file.” |
+| `cd . && npm run build:ios:simulator` | 1 | CocoaPods could not resolve `cdn.cocoapods.org` while fetching `all_pods_versions_a_9_3.txt`. Xcode was not reached. The previously tracked `ios/Podfile.lock` is present. |
+| `cd . && npm run check:secrets` | 0 | Zero pattern matches in source, reachable Git patches and 155 existing simulator asset files. |
+| `node scripts/check-secrets.mjs .cache/DerivedData/Build/Products/Debug-iphonesimulator/JumpLab.app` | 0 | The existing app directory was scanned twice by the script. Its `Info.plist` exists and `main.jsbundle` is absent. Current bundled JavaScript still needs scanning after a successful build. |
+| `npm run check:dependencies -- --fetch-retries=0` | 1 | The advisory request failed with `getaddrinfo ENOTFOUND registry.npmjs.org`. |
+| `supabase --version`, `docker info`, `psql --version`, `cmake --version` | 127 each | Commands unavailable on PATH. |
+| `cd . && npm run test:integration`, `cd . && npm run test:security` | 2 each | Disposable-backend guard stopped both commands. Zero live assertions. |
+| `cd . && npm run evaluate:video` | 2 | Zero consented annotated clips. Real-world accuracy remains unverified. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+- **JL-015, JL-016 and R5-02.** Replaying 100 synthetic rollovers with the previous adapter produced a 686.86 kg squat target. The database and workout logger accept loads through 500 kg. The adapter now caps increases at that existing storage limit. “Repeated load increases stay within the server and workout logging range” verifies the new boundary and successful prescribed-set validation. The shared maximum-input profile also goes through the disposable parity suite’s generation, hold, increase and deload cases.
+- **JL-013, JL-019 and R5-03.** “A rejected profile_plan RPC leaves a single terminal pair and no active draft” exercises the store and SQLite with a simulated server `22023`. It verifies a single RPC for both records, no second dispatch on retry, and no active rejected draft. The live rollback suite now checks all saved profile answers and confirms that the replacement adaptation row is absent alongside the plan and prescriptions. Run the parity and rollback suites after applying the migrations on disposable local Supabase.
+- **JL-020 and JL-023.** “A pending sign-out blocks account B until device erasure completes” exercises the store against host SQLite across the erase boundary. Account B cannot open while the intent exists and opens with no A records or pending writes after erasure. The app restart and incoming-link component tests also passed. Native Keychain interruption remains unverified.
+- **JL-011, JL-016, JL-024 and JL-025.** The rejection-only evaluator gate and final-day rollover regressions passed locally. Canonical profile identity, lost-ack replays and timestamp rejection cases are covered in the disposable integration suite. That suite still needs a local Supabase CLI and container runtime, applied migrations and local test credentials. The TypeScript database contract remains provisional until generated from the applied schema.
+
+Clean installation, new simulator link and launch, and generated database types are stage S2 work. Physical iPhone installation, device measurements and real-video accuracy remain open. Earlier iteration logs below are historical evidence.
+
 ## Round 5, stage S1, iteration 4
 
 Ran from `8172bf0` on 2026-11-18 (MST) with macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node v24.21.0 and npm 12.2.0. All commands started in the JumpLab repository root. The direct simulator build uses the repository's writable DerivedData directory.

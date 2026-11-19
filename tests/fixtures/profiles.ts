@@ -15,6 +15,7 @@ export const feasibleProfiles = {
   trained: { ...profile, experience: 'trained' },
   practice: { ...profile, practiceDays: [1] },
   progression: { ...profile, equipment: 'barbell', knownSquatKg: 100 },
+  maximumKnownSquat: { ...profile, equipment: 'barbell', knownSquatKg: 500 },
   overdue: { ...profile, startDate: '2026-10-05' },
 } satisfies Record<string, Profile>;
 

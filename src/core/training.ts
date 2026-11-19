@@ -1,4 +1,5 @@
 export const RULES = 'conservative/2';
+const MAX_LOAD_KG = 500;
 export type Profile = {
   goal: 'standing' | 'running' | 'repeated'; experience: 'new' | 'trained';
   days: number[]; practiceDays: number[]; startHour: number; weeklyMinutes: number; sessionMinutes: number;
@@ -21,7 +22,7 @@ export function validateProfile(p: Profile) {
     !Number.isInteger(p.startHour) || p.startHour < 0 || p.startHour > 23 ||
     !Number.isFinite(p.weeklyMinutes) || p.weeklyMinutes < 0 || p.weeklyMinutes > 600 ||
     !Number.isFinite(p.sessionMinutes) || p.sessionMinutes < 0 || p.sessionMinutes > 120 ||
-    (p.knownSquatKg !== null && (!Number.isFinite(p.knownSquatKg) || p.knownSquatKg < 0 || p.knownSquatKg > 500))) throw Error('Check profile values, units and schedule.');
+    (p.knownSquatKg !== null && (!Number.isFinite(p.knownSquatKg) || p.knownSquatKg < 0 || p.knownSquatKg > MAX_LOAD_KG))) throw Error('Check profile values, units and schedule.');
 }
 export function validDate(value: string) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
@@ -109,7 +110,7 @@ export function adapt(plan: Plan, observations: Feedback[], reliableTrends: { ty
     week: plan.week + 1, sessions: plan.sessions.map(s => ({ ...s, id: `w${plan.week + 1}-d${s.day}`, scheduledOn: new Date(Date.parse(s.scheduledOn) + weeksToMove * oneWeek).toISOString().slice(0, 10), exercises: s.exercises.map(e => ({ ...e,
     sets: factor === 0 ? 0 : factor < 1 ? e.sets === 0 ? 0 : Math.max(1, Math.floor(e.sets * factor)) : restoreVolume ? e.baseSets : e.sets,
     reps: factor > 1 && e.loadKg === null && e.id !== 'jump' ? Math.min(e.reps + 1, 8) : e.reps,
-    loadKg: e.loadKg !== null && factor > 1 ? Math.floor(e.loadKg * factor * 100) / 100 : e.loadKg,
+    loadKg: e.loadKg !== null && factor > 1 ? Math.min(MAX_LOAD_KG, Math.floor(e.loadKg * factor * 100) / 100) : e.loadKg,
   })) })), explanation: reason };
   return { version: RULES, reason, plan: next };
 }
@@ -120,7 +121,7 @@ export function validateLog(session: Session, logs: SetLog[]) {
     const e = session.exercises.find(e => e.id === l.exerciseId), key = `${l.exerciseId}/${l.index}`;
     if (!e || !Number.isInteger(l.index) || l.index < 0 || l.index >= e.sets || seen.has(key) ||
       !Number.isInteger(l.reps) || l.reps < 0 || l.reps > 100 || typeof l.done !== 'boolean' ||
-      (l.loadKg !== null && (!Number.isFinite(l.loadKg) || l.loadKg < 0 || l.loadKg > 500 || e.id !== 'squat' || e.name === 'Chair squat'))) throw Error('Only valid prescribed sets can be logged.');
+      (l.loadKg !== null && (!Number.isFinite(l.loadKg) || l.loadKg < 0 || l.loadKg > MAX_LOAD_KG || e.id !== 'squat' || e.name === 'Chair squat'))) throw Error('Only valid prescribed sets can be logged.');
     seen.add(key);
   }
 }

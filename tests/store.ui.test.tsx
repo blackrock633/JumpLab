@@ -187,7 +187,7 @@ test.each(['remote', 'local'] as const)('conflicting profile and plan stay toget
   }
 });
 
-test('a workout syncs once when a second profile edit supersedes a published plan whose acknowledgement was lost', async () => {
+test('a workout queued after supersession syncs once if the first plan was published and its acknowledgement was lost', async () => {
   await store.eraseLocalAccount('A');
   await store.switchAccount('A', true);
   const draft = (id: string, equipment: string) => store.saveBatch('A', [
@@ -225,12 +225,12 @@ test('a workout syncs once when a second profile edit supersedes a published pla
   jest.mocked(accountClient).mockResolvedValue({ client: { from, rpc }, isCurrent: () => true } as never);
 
   await draft('first', 'barbell');
-  await store.save('A', 'workout', workout, 'first-log');
   await store.sync('A');
   expect(published.has('first-prescription')).toBe(true);
   expect(from).not.toHaveBeenCalled();
   expect(await store.records('A', 'plan')).toEqual([expect.objectContaining({ id: 'first', revision: 0 })]);
   await draft('second', 'none');
+  await store.save('A', 'workout', workout, 'first-log');
 
   for (let attempt = 0; attempt < 2; attempt++) {
     await store.sync('A');
@@ -252,6 +252,45 @@ test('a workout syncs once when a second profile edit supersedes a published pla
   expect([...remoteWorkouts]).toEqual([['first-log', workout]]);
   expect(await store.pending('A')).toEqual([expect.objectContaining({ id: 'A', state: 'conflict' })]);
   expect(await store.records('A', 'workout')).toEqual([expect.objectContaining({ id: 'first-log', revision: 1, payload: workout })]);
+});
+
+test('a pain edit pauses training immediately while the original plan and completed workout sync', async () => {
+  await store.eraseLocalAccount('A');
+  await store.switchAccount('A', true);
+  const profile = { pain: false, equipment: 'barbell' };
+  const pause = { pain: true, equipment: 'none' };
+  const replacement = { id: 'plan', payload: { sessions: [{ prescriptionId: 'prescription' }] } };
+  const workout = { prescriptionId: 'prescription', completed: true, sets: [{ done: true, reps: 5 }] };
+  await store.saveBatch('A', [{ id: 'A', kind: 'profile', payload: profile }, { kind: 'plan', ...replacement }]);
+  await store.save('A', 'workout', workout, 'completion');
+  let finish!: () => void, dispatch!: () => void;
+  const dispatched = new Promise<void>(resolve => { dispatch = resolve; });
+  const firstResponse = new Promise<void>(resolve => { finish = resolve; });
+  const rpc = jest.fn((_name, args) => ({ abortSignal: async () => {
+    if (args.payload.replacement) { dispatch(); await firstResponse; }
+    return { data: { revision: args.expected_revision + 1 }, error: null };
+  } }));
+  jest.mocked(accountClient).mockResolvedValue({ client: { rpc }, isCurrent: () => true } as never);
+  const publishing = store.sync('A');
+  await dispatched;
+  try {
+    await store.saveBatch('A', [{ id: 'A', kind: 'profile', payload: pause }]);
+    expect(await store.records('A', 'profile')).toEqual([expect.objectContaining({ payload: { ...pause, planBinding: true } })]);
+    expect(await store.pending('A')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'A', replacement: { id: 'plan' } }),
+      expect.objectContaining({ id: 'completion', state: 'pending' }),
+    ]));
+  } finally { finish(); await publishing; }
+  expect(await store.pending('A')).toEqual([expect.objectContaining({ id: 'A', revision: 1, state: 'pending' })]);
+  await store.sync('A');
+  expect(rpc.mock.calls).toEqual([
+    ['save_record', { kind: 'profile_plan', record_id: 'A', expected_revision: 0,
+      payload: { profile: { ...profile, planBinding: true }, replacement } }],
+    ['save_record', { kind: 'workout', record_id: 'completion', expected_revision: 0, payload: workout }],
+    ['save_record', { kind: 'profile_plan', record_id: 'A', expected_revision: 1,
+      payload: { profile: { ...pause, planBinding: true }, replacement: null } }],
+  ]);
+  expect(await store.pending('A')).toEqual([]);
 });
 
 test('keeping the saved profile cannot activate an earlier plan after a concurrent pain pause', async () => {

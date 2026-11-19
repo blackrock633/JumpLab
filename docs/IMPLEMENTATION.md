@@ -1,5 +1,35 @@
 # JumpLab implementation handoff
 
+## Round 5, stage S1, iteration 4 on November 19
+
+Verified from `2a13d41` on macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node v24.21.0 and npm 12.2.0. Commands started in the JumpLab root unless shown otherwise.
+
+| Command | Exit | Observed result |
+| --- | ---: | --- |
+| `sw_vers && xcodebuild -version && node --version && npm --version` | 0 | Reported the host and toolchain versions above. |
+| `test ! -e modules/jump-analysis/node_modules && test ! -e modules/jump-analysis/package-lock.json && git check-ignore modules/jump-analysis/package-lock.json` | 0 | Nested artifacts absent and nested lockfile path ignored. |
+| `cd . && npm run -s typecheck` | 0 | TypeScript passed. |
+| `cd . && npm run -s lint` | 0 | Zero source check failures. |
+| `cd . && npx --no-install expo config --type public --json > /dev/null` | 0 | Expo public configuration resolved. |
+| `cd . && npm run test:unit` | 0 | 47 passed, zero skipped. |
+| `cd . && npm run test:ui` | 0 | 53 passed across five suites, with mock transport and native modules where applicable. |
+| `cd . && npm run test:native` | 0 | macOS synthetic detector, timing, media and receipt checks passed. |
+| `cd . && npm run check:docs` | 0 | Documented paths and all 38 criterion IDs found. |
+| `cd . && npm run check:secrets` | 0 | Zero pattern matches across source, reachable Git patches and 155 existing client assets. |
+| `xcrun simctl list devices available` | 1 | CoreSimulator connection refused. |
+| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ~/agentloop/derived/e177760763b1 CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | CoreSimulator connection became invalid. Xcode reported “JumpLab.xcworkspace is not a workspace file.” |
+| `cd . && npm run build:ios:simulator` | 1 | CocoaPods stopped before Xcode with “Couldn't resolve host name” for `cdn.cocoapods.org/all_pods_versions_a_9_3.txt`. |
+| `test -f ios/JumpLab.xcworkspace/contents.xcworkspacedata` | 0 | Workspace descriptor exists. |
+| `supabase --version`, `docker info`, `psql --version` | 127 each | Commands unavailable on PATH. |
+| `node --check scripts/backend-test.mjs` | 0 | Backend suite parsed. |
+| `npm run test:integration`, `npm run test:security` | 2 each | Disposable-environment guard stopped both suites before any assertions. |
+| `cd . && npm run evaluate:video` | 2 | Zero annotated clips. Real-video accuracy remains unverified. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+- **JL-013 and JL-019.** Routine profile edits wait when a saved workout still depends on the queued plan, even for completed workouts and earlier dates. The transactional guard leaves the original publication and workout queued. “A completed workout keeps its unpublished plan across a blocked edit, restart and reconnect” reopens the SQLite file, acknowledges the dependency and confirms exactly one workout dispatch using simulated transport. A pain edit pauses training on the iPhone immediately. “A pain edit pauses training immediately while the original plan and completed workout sync” verifies that the original wire payload survives an in-flight edit and that the pause can sync on the next refresh. A terminal rejection preserves the pair for review and the app prompts the user to save the pain pause again.
+- **JL-031 and R5-03.** Today and Progress share the cached prescription’s publication check. The error and conflict component cases continue a retryable draft, record a terminal outcome through Settings, and verify that the saved log stays visible in Progress without a logging action in either view.
+- **JL-015, R5-02 and R5-03.** Live parity and rollback still require a disposable Supabase stack with the migrations applied. The backend test commands made zero live assertions. Simulator launch remains outstanding. Real athlete accuracy and physical-device behavior remain unverified.
+
 ## Round 5, stage S1, iteration 3
 
 Verified from `4da83d4` on 2026-11-19 (MST). Commands ran in the JumpLab root unless shown otherwise. Earlier logs are historical.

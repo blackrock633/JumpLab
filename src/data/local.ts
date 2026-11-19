@@ -122,6 +122,25 @@ export async function putBatch(db: LocalDB, owner: string, values: { kind: Write
     const profile = values.find(value => value.kind === 'profile');
     const plan = profile && values.find(value => value.kind === 'plan');
     const replacement = plan ? { id: plan.id, payload: plan.payload } : undefined;
+    if (profile && await tx.getFirstAsync(`SELECT 1 FROM pending parent
+      JOIN records plan ON plan.owner=parent.owner AND plan.id=json_extract(parent.value,'$.replacement.id')
+      JOIN json_each(plan.payload,'$.sessions') session
+      JOIN pending workout ON workout.owner=parent.owner
+      WHERE parent.id=? AND parent.owner=? AND plan.kind='plan' AND plan.revision=0
+        AND json_extract(parent.value,'$.kind')='profile' AND json_extract(parent.value,'$.state')<>'error'
+        AND json_extract(workout.value,'$.kind')='workout' AND json_extract(workout.value,'$.state')<>'error'
+        AND json_extract(workout.value,'$.payload.prescriptionId')=json_extract(session.value,'$.prescriptionId')
+      LIMIT 1`, profile.id, owner)) {
+      if (values.length !== 1 || (profile.payload as { pain?: boolean }).pain !== true) {
+        throw Error('Sync this plan in Settings before replacing it so its saved workouts can still sync.');
+      }
+      // Pause training locally now. Keep the original RPC payload intact so it
+      // can publish the prescriptions needed by workouts already saved.
+      await tx.runAsync("UPDATE records SET payload=? WHERE id=? AND owner=? AND kind='profile'",
+        JSON.stringify({ ...profile.payload as object, planBinding: true }), profile.id, owner);
+      return;
+    }
+
     for (const value of values) {
       const { id, kind } = value;
       let { payload } = value;
@@ -185,6 +204,16 @@ export async function reconcileWrite(db: LocalDB, sent: Pending, next: Pending |
       await tx.runAsync('UPDATE records SET revision=? WHERE id=? AND owner=?', revision, sent.id, sent.owner);
       if (!unchanged) next = { ...current, revision };
     } else if (!unchanged) return;
+    if (unchanged && sent.replacement && revision !== undefined) {
+      const pause = await tx.getFirstAsync<{ payload: string }>(`SELECT payload FROM records
+        WHERE id=? AND owner=? AND kind='profile' AND json_extract(payload,'$.pain')=1`, sent.id, sent.owner);
+      if (pause) {
+        // The original publication has settled. Send the saved pain edit
+        // against the resulting revision on the next sync.
+        next = { id: sent.id, owner: sent.owner, kind: 'profile', revision,
+          payload: JSON.parse(pause.payload), state: 'pending', attempts: 0 };
+      }
+    }
     if (next) await tx.runAsync('UPDATE pending SET value=? WHERE id=? AND owner=?', JSON.stringify(next), sent.id, sent.owner);
     else await tx.runAsync('DELETE FROM pending WHERE id=? AND owner=?', sent.id, sent.owner);
   });

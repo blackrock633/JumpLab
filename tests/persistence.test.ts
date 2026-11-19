@@ -38,6 +38,55 @@ test('failed queue insertion rolls back saved-work acknowledgement', async () =>
   await assert.rejects(putLocal(db, 'A', 'workout', { complete: true }, 'w'), /disk-full/);
   assert.equal((await db.getAllAsync('SELECT id FROM records')).length, 0); close();
 });
+
+test('a completed workout keeps its unpublished plan across a blocked edit, restart and reconnect', async () => {
+  mkdirSync('.cache/tests', { recursive: true });
+  const folder = mkdtempSync('.cache/tests/profile-restart-');
+  const file = folder + '/records.sqlite';
+  let connection = adapter(file);
+  const profile = { kind: 'profile' as const, id: 'A', payload: { pain: false, equipment: 'barbell' } };
+  const originalPlan = { kind: 'plan' as const, id: 'original', payload: {
+    sessions: [{ prescriptionId: 'original-prescription', scheduledOn: '2026-11-16' }],
+  } };
+  const edit = { ...profile, payload: { pain: false, equipment: 'none' } };
+  const replacement = { ...originalPlan, id: 'replacement', payload: { sessions: [] } };
+  const completed = { prescriptionId: 'original-prescription', completed: true,
+    completedAt: '2026-11-16T17:45:00.000Z', sets: [{ done: true, reps: 5 }] };
+  try {
+    await initialize(connection.db); await changeAccount(connection.db, 'A');
+    await putBatch(connection.db, 'A', [profile, originalPlan]);
+    await putLocal(connection.db, 'A', 'workout', { ...completed, completed: false, completedAt: null }, 'completed-log');
+    await putLocal(connection.db, 'A', 'workout', completed, 'completed-log');
+    // The prescription is on an earlier date and is still awaiting publication.
+    await assert.rejects(putBatch(connection.db, 'A', [edit, replacement]), /saved workouts can still sync/);
+    connection.close();
+    connection = adapter(file); await initialize(connection.db);
+    const { db } = connection;
+    const published = new Set<string>();
+    const synced: unknown[] = [];
+    async function reconnect() {
+      await drain('A', await readPending(db, 'A', true), async write => {
+        assert.equal(await workoutPlanState(db, write), 'ready');
+        if (write.kind === 'profile') {
+          assert.equal(write.replacement?.id, 'original');
+          published.add('original-prescription');
+        } else {
+          assert.equal(write.kind, 'workout');
+          assert.ok(published.has((write.payload as typeof completed).prescriptionId));
+          synced.push(write.payload);
+        }
+        return 'ok';
+      }, (_id, next, write) => reconcileWrite(db, write, next, 1));
+    }
+    await reconnect();
+    await reconnect();
+    assert.deepEqual(synced, [completed]);
+    assert.deepEqual(await readPending(db, 'A'), []);
+    await putBatch(db, 'A', [edit, replacement]);
+    assert.equal((await readPending(db, 'A'))[0]?.replacement?.id, 'replacement');
+    assert.equal((await db.getFirstAsync<{ revision: number }>("SELECT revision FROM records WHERE id='completed-log'"))?.revision, 1);
+  } finally { connection.close(); rmSync(folder, { recursive: true }); }
+});
 test('repeated-jump results and their queue entries commit as one group or roll back', async () => {
   const { db, close } = adapter(':memory:'); await initialize(db); await changeAccount(db, 'A');
   await db.execAsync("CREATE TRIGGER fail_second BEFORE INSERT ON pending WHEN NEW.id='j2' BEGIN SELECT RAISE(ABORT,'disk-full-simulation'); END;");
@@ -183,14 +232,22 @@ test('profile drafts and their prescriptions have one durable queue entry with a
   const [sent, log] = await readPending(db, 'A', true);
   assert.equal(sent!.replacement?.id, 'plan-one');
   assert.equal(await workoutPlanState(db, log!), 'waiting');
-  await draft('plan-two', 'none');
+  await assert.rejects(draft('plan-two', 'none'), /saved workouts can still sync/);
   await reconcileWrite(db, sent!, null, 1);
+  await draft('plan-two', 'none');
   const [next, updatedLog] = await readPending(db, 'A', true);
   assert.equal(next!.revision, 1);
   assert.equal(next!.replacement?.id, 'plan-two');
   assert.equal(await workoutPlanState(db, updatedLog!), 'ready');
   assert.equal((await db.getFirstAsync<{ revision: number }>("SELECT revision FROM records WHERE id='plan-one'"))?.revision, 1);
   await assert.rejects(putLocal(db, 'A', 'plan', { profileRevision: 1 }, 'standalone'), /Sync the current profile/);
+  const [inFlight] = await readPending(db, 'A', true);
+  await draft('plan-three', 'dumbbells');
+  await reconcileWrite(db, inFlight!, null, 2);
+  const [newest] = await readPending(db, 'A', true);
+  assert.equal(newest!.revision, 2);
+  assert.equal(newest!.replacement?.id, 'plan-three');
+  assert.equal((await db.getFirstAsync<{ revision: number }>("SELECT revision FROM records WHERE id='plan-two'"))?.revision, 1);
   close();
 });
 

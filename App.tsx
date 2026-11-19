@@ -44,11 +44,12 @@ function Application() {
   const activePlan = selectActivePlan(plans, profiles[0], queue);
   const plan = activePlan?.payload;
   const paused = profile?.pain || plan?.sessions.every(s => s.exercises.every(e => e.sets === 0));
-  const byWorkout = new Map(plans.flatMap(row => row.payload.sessions.map(s => [s.workoutId, s] as const)));
+  const byWorkout = new Map(plans.flatMap(row => row.payload.sessions.map(session =>
+    [session.workoutId, { session, available: row.revision > 0 || row.id === activePlan?.id }] as const)));
   const resumable = profile && !paused && workouts.flatMap(w => {
-    const s = byWorkout.get(w.id);
-    return !w.payload.completed && s && canOpenWorkout(s, false) && canResumeWorkout(s, profile) &&
-      !plan?.sessions.some(current => current.workoutId === w.id) ? [s] : [];
+    const workout = byWorkout.get(w.id);
+    return !w.payload.completed && workout?.available && canOpenWorkout(workout.session, false) &&
+      canResumeWorkout(workout.session, profile) && !plan?.sessions.some(current => current.workoutId === w.id) ? [workout.session] : [];
   });
   async function read(account: string) {
     const [p, pl, j, w, q] = await Promise.all([store.records<SavedProfile>(account, 'profile'), store.records<SavedPlan>(account, 'plan'), store.records<JumpResult>(account, 'jump'), store.records<WorkoutRecord>(account, 'workout'), store.pending(account)]);
@@ -157,7 +158,7 @@ function Application() {
       }
       const local = await store.records<WorkoutRecord>(owner, 'workout', cutoff.toISOString());
       const started = local.flatMap(w => {
-        const s = byWorkout.get(w.id);
+        const s = byWorkout.get(w.id)?.session;
         return !w.payload.completed && s?.scheduledOn === today ? [s] : [];
       });
       const completedAt = new Map<string, string>();
@@ -165,10 +166,6 @@ function Application() {
         if (!value.completed || !value.completedAt) continue;
         const prior = completedAt.get(value.prescriptionId);
         if (!prior || Date.parse(value.completedAt) > Date.parse(prior)) completedAt.set(value.prescriptionId, value.completedAt);
-      }
-      const resumableIds = new Set(started.filter(s => canResumeWorkout(s, p)).map(s => s.workoutId));
-      if (plans.some(row => row.revision === 0 && row.payload.sessions.some(s => resumableIds.has(s.workoutId)))) {
-        throw Error('Sync this plan in Settings before replacing it so today’s workout can still sync.');
       }
       const recentActivity = [...completedAt.values()];
       if (started.length || !historyComplete) recentActivity.push(now.toISOString());
@@ -315,7 +312,7 @@ function Application() {
             try { await saveProfile(value); } finally { setSavingProfile(false); }
           }} />
           {profile ? <Button title="Cancel profile edit" disabled={savingProfile} onPress={() => setEditProfile(false)} /> : null}
-        </View> : selectedSession ? <View>
+        </View> : selectedSession && byWorkout.get(selectedSession.workoutId)?.available !== false ? <View>
           <Button title="Back to plan" onPress={() => setSelectedSession(null)} />
           <Workout key={selectedSession.workoutId} session={selectedSession} paused={Boolean(paused)} initial={workouts.find(w => w.id === selectedSession.workoutId)?.payload}
             onSave={async w => {
@@ -330,6 +327,9 @@ function Application() {
             }} />
         </View> : <View><Copy heading>Your week</Copy>
           {resumable && resumable.map(s => <Button key={s.workoutId} title={`Resume workout · ${s.scheduledOn} ${s.startHour}:00`} onPress={() => setSelectedSession(s)} />)}
+          {profile.pain && profileWrite?.replacement ? <Copy>{profileWrite.state === 'error'
+            ? 'Training is paused on this iPhone. The earlier plan was rejected. Save your pain pause again to queue it for sync.'
+            : 'Training is paused on this iPhone. Check Settings to sync the earlier plan for saved workouts, then sync the pause.'}</Copy> : null}
           {profile.pain || paused ? <Copy>Training paused. Stop or modify for pain or unusual fatigue. Review your profile and seek qualified guidance when needed.</Copy> : plan ? <View><Copy>Week {plan.week} · {plan.explanation}</Copy>{plan.changeReason && plan.changeReason !== plan.explanation ? <Copy muted>{plan.changeReason}</Copy> : null}
             {plan.sessions.map(s => {
               const done = Boolean(workouts.find(w => w.id === s.workoutId)?.payload.completed);
@@ -373,9 +373,11 @@ function Application() {
           {chartLimit < recent.length ? <Button title="Show more estimates" onPress={() => setChartLimit(chartLimit + 30)} /> : null}
           <Copy heading>Workout history</Copy>
           {!workouts.length ? <Copy>No workouts yet. Start a prescribed session in Today.</Copy> : workouts.map(w => {
-            const s = byWorkout.get(w.id);
-            return <Button key={w.id} title={`${w.payload.completed ? 'Completed' : 'In progress'} · ${new Date(w.payload.updatedAt).toLocaleDateString()} · ${w.payload.sets.filter(s => s.done).length} sets done`} onPress={() => void action(async () => {
-              const prescription = s ?? await store.prescription<SavedSession>(owner, w.payload.prescriptionId);
+            const workout = byWorkout.get(w.id);
+            const summary = `${w.payload.completed ? 'Completed' : 'In progress'} · ${new Date(w.payload.updatedAt).toLocaleDateString()} · ${w.payload.sets.filter(s => s.done).length} sets done`;
+            if (workout && !workout.available) return <Copy key={w.id}>{summary} · Saved history only. Check plan sync in Settings.</Copy>;
+            return <Button key={w.id} title={summary} onPress={() => void action(async () => {
+              const prescription = workout?.session ?? await store.prescription<SavedSession>(owner, w.payload.prescriptionId);
               if (!w.payload.completed && (!profile || paused || !canResumeWorkout(prescription, profile))) {
                 throw Error('Your current training profile pauses or restricts this workout. Its logged work is kept in history.');
               }

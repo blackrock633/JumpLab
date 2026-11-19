@@ -1,6 +1,41 @@
 # JumpLab implementation handoff
 
-## Round 5, stage S1
+## Round 5, stage S1, iteration 2
+
+Ran from `06bd060` on 2026-11-18 (MST). The host reported macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node v24.21.0 and npm 12.2.0. Commands below started in the JumpLab repository root.
+
+| Command | Exit | Observed result |
+| --- | ---: | --- |
+| `sw_vers && xcodebuild -version && node --version && npm --version` | 0 | Confirmed the tool versions above. |
+| `test ! -e modules/jump-analysis/node_modules && test ! -e modules/jump-analysis/package-lock.json && git check-ignore modules/jump-analysis/package-lock.json` | 0 | Both nested install artifacts remained absent. The nested lockfile path is ignored. |
+| `cd . && npm run -s typecheck` | 0 | TypeScript passed. |
+| `cd . && npm run -s lint` | 0 | Zero focused source check failures. |
+| `cd . && npx --no-install expo config --type public --json > /dev/null` | 0 | Expo public configuration resolved. |
+| `cd . && npm run test:unit` | 0 | 43 passed, zero skipped. |
+| `cd . && npm run test:ui` | 0 | 35 passed across five suites. |
+| `cd . && npm run test:native` | 0 | macOS synthetic detector, media and receipt checks passed. |
+| `cd . && npm run check:docs` | 0 | Documented paths and all 38 criterion IDs found. |
+| `cd . && npm run check:secrets` | 0 | Zero pattern matches in source, 155 pre-existing client asset files and reachable Git patches. |
+| `plutil -lint ios/JumpLab/Info.plist ios/JumpLab.xcodeproj/project.pbxproj` | 0 | Both files passed syntax checks. |
+| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath ~/agentloop/derived/e177760763b1 CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | CoreSimulator connection invalid. Xcode reported “JumpLab.xcworkspace is not a workspace file.” |
+| `TMPDIR="$PWD/.cache/tmp" xcodebuild -workspace "$PWD/ios/JumpLab.xcworkspace" -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/.cache/DerivedData" CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | The absolute workspace path and writable DerivedData path yielded the same workspace error. |
+| `cd . && npm run build:ios:simulator` | 1 | CocoaPods could not resolve `cdn.cocoapods.org` for `all_pods_versions_a_9_3.txt`. The script stopped before Xcode. |
+| `xcrun simctl list devices available` | 1 | CoreSimulator returned “Connection refused.” Launch smoke and screenshots require a working simulator service and a rebuilt app. |
+| `TMPDIR="$PWD/.cache/tmp" xcrun --sdk iphonesimulator swiftc -typecheck -D DEBUG -target arm64-apple-ios16.4-simulator -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -module-cache-path "$PWD/.cache/swift-ios" -F "$PWD/.cache/DerivedData/Build/Products/Debug-iphonesimulator/XCFrameworkIntermediates/ExpoModulesCore" -F "$PWD/.cache/DerivedData/Build/Products/Debug-iphonesimulator/XCFrameworkIntermediates/ExpoModulesJSI" modules/jump-analysis/ios/*.swift` | 0 | All native module Swift sources, including the Expo bridge, type-checked against the simulator SDK and existing Expo frameworks. |
+| `supabase --version`, `docker info`, `psql --version` | 127 each | Each command was unavailable on PATH. |
+| `cd . && npm run test:integration`, `cd . && npm run test:security` | 2 each | Both stopped at the disposable-backend guard. Zero real client assertions ran. |
+| `cd . && npm run evaluate:video` | 2 | “UNVERIFIED: no annotated real clips.” Zero clips evaluated. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+| Reviewer finding | Fix and evidence |
+| --- | --- |
+| Profile and plan publication (JL-013, JL-015, JL-019, R5-02, R5-03) | Migration `202611190001_fix_profile_plan_extraction.sql` extracts the nested profile before removing server-controlled keys. The disposable suite covers valid paired publication, concurrent exact replay, pain-only publication and replay, and rollback with quota consumption. Run the migrations and both backend suites with a disposable local Supabase CLI and container runtime to verify the server paths. |
+| Saved profile revision race (JL-004, JL-019, JL-031) | Keeping the saved profile fetches a matching plan and confirms the revision before settling the pair in one SQLite transaction. “Keeping the saved profile cannot activate an earlier plan after a concurrent pain pause” exercises a pause arriving during the plan read and a successful retry that installs the pause. |
+| Unreadable analysis receipt (JL-021, JL-031) | Native Swift distinguishes readable corruption from failed file reads and rechecks corruption before removing the current account’s receipt. The macOS file test covers malformed JSON, non-object and incomplete receipts, a valid replacement and an I/O failure. UI tests cover discard followed by a new analysis and retry after temporary read failure. A host SQLite test confirms that saved measurements and their pending writes survive recovery. |
+
+Iteration 1’s simulator build predates these Swift edits. Its CocoaPods project, workspace, privacy manifest and lockfile were already present when iteration 2 began. The simulator-target type check covers the current Swift code. A fresh linked build and launch still require the orchestrator or a Mac session with working CocoaPods and CoreSimulator access. Device and real-video measurements remain unverified.
+
+## Round 5, stage S1, iteration 1
 
 Verified from `18bbe2e` on 2026-11-18 (MST), macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node v24.21.0 and npm 12.2.0. Commands below ran from the JumpLab repository root.
 

@@ -5,7 +5,7 @@ import { randomUUID } from 'expo-crypto';
 import { accountClient } from './auth';
 import type { Json } from './database.types';
 import { drain, type Pending, type WriteKind, type Outcome } from '../core/queue';
-import { initialize, assertOwner, changeAccount, putLocal, putBatch, type DiskRow, recentJumpRows, readPending, readPendingStatus, mergeRemote, reconcileWrite, workoutPlanState, markSignOut } from './local';
+import { initialize, assertOwner, changeAccount, putLocal, putBatch, type DiskRow, recentJumpRows, readPending, readPendingStatus, mergeRemote, mergeRemoteRows, reconcileWrite, workoutPlanState, markSignOut, type RemoteRow } from './local';
 
 export type LocalRecord<T = unknown> = { id: string; owner: string; kind: WriteKind; payload: T; revision: number };
 let dbPromise: Promise<SQLite.SQLiteDatabase> | undefined;
@@ -80,17 +80,32 @@ export async function resolveConflict(owner: string, id: string, choice: 'remote
   }
   if (choice === 'local' && (queued.kind === 'jump' || queued.kind === 'plan')) throw Error('Saved measurements and plans are immutable. Keep the saved version or retain this local conflict for support.');
   const keepRemoteProfile = choice === 'remote' && queued.kind === 'profile';
-  if (keepRemoteProfile) {
-    // Hydration keeps the queued profile protected while downloading its plan.
-    await hydrate(owner);
+  const savedProfile = keepRemoteProfile ? data?.data as { planBinding?: boolean; pain?: boolean } | null : null;
+  let savedPlan: RemoteRow | null = null;
+  if (data && savedProfile && !savedProfile.pain) {
+    const plans = client.from('plans').select('id,user_id,revision,data,created_at').eq('user_id', owner);
+    const matching = savedProfile.planBinding
+      ? plans.filter('data->>profileRevision', 'eq', String(data.revision))
+      : plans.or('data->>profileRevision.is.null,data->>profileRevision.eq.' + data.revision);
+    const result = await matching.order('created_at', { ascending: false }).order('id', { ascending: false }).limit(1).maybeSingle();
+    if (!isCurrent() || result.error || (savedProfile.planBinding && !result.data)) {
+      throw Error('Could not load the saved training plan. Your local work is preserved.');
+    }
+    savedPlan = result.data;
+    // The plan and profile are separate reads. Retain the conflict if the
+    // profile advanced while reading the plan, including a new pain pause.
+    const latest = await client.from('profiles').select('revision').eq('user_id', owner).eq('id', data.id).maybeSingle();
+    if (!isCurrent() || latest.error || latest.data?.revision !== data.revision) {
+      throw Error('Could not confirm the saved profile is still current. Review the conflict again. Your local work is preserved.');
+    }
   }
   await serial(() => db.withExclusiveTransactionAsync(async tx => {
     await assertOwner(tx, owner);
     const latest = await tx.getFirstAsync<{ value: string }>('SELECT value FROM pending WHERE owner=? AND id=?', owner, id);
     if (!isCurrent() || latest?.value !== found?.value) throw Error('The local record changed. Review it again.');
-    if (keepRemoteProfile && data) {
-      const savedProfile = data.data as { planBinding?: boolean; pain?: boolean } | null;
-      if (savedProfile?.planBinding && !savedProfile.pain && !await tx.getFirstAsync(
+    if (savedPlan) await mergeRemoteRows(tx, owner, 'plan', [savedPlan]);
+    if (data && savedProfile?.planBinding && !savedProfile.pain) {
+      if (!await tx.getFirstAsync(
         "SELECT 1 FROM records WHERE owner=? AND kind='plan' AND revision>0 AND json_extract(payload,'$.profileRevision')=? LIMIT 1",
         owner, data.revision,
       )) throw Error('Could not load the saved training plan. Your local work is preserved.');
@@ -125,6 +140,9 @@ export async function saveBatch(owner: string, values: { kind: WriteKind; payloa
   return serial(async () => putBatch(await database(), owner, values));
 }
 export class RejectedAnalysis extends Error {}
+export class CorruptAnalysis extends Error {
+  constructor() { super('Previous analysis data is damaged. Open Analyze to discard it and import again.'); }
+}
 export async function commitAnalysis(owner: string, receipt: AnalysisReceipt) {
   let results;
   try {
@@ -143,8 +161,11 @@ export async function commitAnalysis(owner: string, receipt: AnalysisReceipt) {
   }
 }
 export async function recoverAnalysis(owner: string) {
-  const receipt = await Native.recoverAnalysis(owner);
+  const receipt = await Native.recoverAnalysis(owner).catch(() => {
+    throw Error('Could not read the previous analysis. Unlock this iPhone and retry saving.');
+  });
   if (!receipt) return null;
+  if ('status' in receipt) throw new CorruptAnalysis();
   return commitAnalysis(owner, receipt);
 }
 let syncing = false;

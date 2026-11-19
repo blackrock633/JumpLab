@@ -67,6 +67,34 @@ import AVFoundation
     try Data("not a movie".utf8).write(to: broken)
     await reject("corrupt media") { _ = try await analyzer.run(broken, fps: 60, type: "standing", deleteAfter: true) }
     precondition(!FileManager.default.fileExists(atPath: broken.path), "Rejected analysis must remove disposable media")
+    try await checkAnalysisRecovery(in: dir)
     print("Native file/metadata failure tests only. No real athlete footage or accuracy evidence.")
+  }
+
+  static func checkAnalysisRecovery(in dir: URL) async throws {
+    let receipt = dir.appendingPathComponent("receipt")
+    let valid = dir.appendingPathComponent("valid-receipt")
+    let payload: [String: Any] = ["id": UUID().uuidString, "type": "standing", "fps": 60.0, "confirmed": true,
+      "createdAt": "2026-11-18T00:00:00Z", "ids": [UUID().uuidString], "analysis": [
+        "timestamps": [0.0, 0.02], "playbackFPS": 60.0, "events": [["takeoff": [0.0, 0.02], "landing": [0.4, 0.42]]],
+      ]]
+    let bytes = try JSONSerialization.data(withJSONObject: payload)
+    try bytes.write(to: valid)
+    for contents in ["{", "[]", "{}"] {
+      try Data(contents.utf8).write(to: receipt)
+      guard case .corrupt = try AnalysisRecovery.read(receipt) else { fatalError("Expected confirmed receipt corruption") }
+      let discarded = try AnalysisRecovery.discardCorrupt(receipt)
+      precondition(discarded)
+      guard case .missing = try AnalysisRecovery.read(receipt) else { fatalError("A discarded receipt must not block a new analysis") }
+    }
+    try bytes.write(to: receipt)
+    let discardedValid = try AnalysisRecovery.discardCorrupt(receipt)
+    precondition(!discardedValid)
+    guard case .receipt = try AnalysisRecovery.read(receipt) else { fatalError("A valid replacement receipt must survive discard") }
+    let unchanged = try Data(contentsOf: valid)
+    precondition(unchanged == bytes)
+    await reject("receipt I/O error cannot authorize discard") { try AnalysisRecovery.discardCorrupt(dir) }
+    precondition(FileManager.default.fileExists(atPath: dir.path))
+    print("PASS corrupt receipt recovery preserves valid and unreadable data")
   }
 }

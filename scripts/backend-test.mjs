@@ -150,6 +150,17 @@ try {
   }
   const aData = await seedAll(a.token, change, 3);
   await seedAll(b.token, profile, 1);
+  const painOnly = { profile: { ...change, pain: true }, replacement: null };
+  check((await rpc(secondClient.token, 'profile_plan', pId, painOnly, 3)).data === 4, 'publish a pain pause without creating a replacement plan');
+  check((await rpc(secondClient.token, 'profile_plan', pId, painOnly, 3)).data === 4, 'retry a pain-only publication after a lost acknowledgement');
+  const [pausedProfile, plansAfterPause] = await Promise.all([
+    request('/rest/v1/profiles?select=revision,data', a.token),
+    request('/rest/v1/plans?select=id', a.token),
+  ]);
+  check(pausedProfile.ok && pausedProfile.data[0].revision === 4 && pausedProfile.data[0].data.pain === true &&
+    pausedProfile.data[0].data.planBinding === true && !Object.hasOwn(pausedProfile.data[0].data, 'replacementPlanId'),
+    'pain-only publication persists the pause and clears the replacement binding');
+  check(plansAfterPause.ok && plansAfterPause.data.length === 2, 'pain-only publication leaves existing plans and adds none');
   const forgedWorkout = await rpc(b.token, 'workout', aData.plan.sessions[0].workoutId, aData.workout);
   check(!forgedWorkout.ok && forgedWorkout.data?.code === '22023', 'cross-account prescription rejected by the mutation RPC');
   check(!(await rpc(b.token, 'jump', aData.jump.id, aData.jump)).ok, 'cross-account duplicate measurement rejected');

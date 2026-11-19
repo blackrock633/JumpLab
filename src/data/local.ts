@@ -134,19 +134,23 @@ export type RemoteRow = { id: string; user_id: string; revision: number; data: u
 export async function mergeRemote(db: LocalDB, owner: string, kind: WriteKind, rows: RemoteRow[]) {
   await db.withExclusiveTransactionAsync(async tx => {
     await assertOwner(tx, owner);
-    for (const row of rows) {
-      if (row.user_id !== owner) throw Error('Account mismatch.');
-      const id = row.id.toLowerCase();
-      if (kind === 'profile') await tx.runAsync(`DELETE FROM records WHERE owner=? AND kind='profile' AND id<>?
-        AND NOT EXISTS(SELECT 1 FROM pending WHERE owner=? AND json_extract(value,'$.kind')='profile')`, owner, id, owner);
-      const payload = kind === 'jump' ? { ...(row.data as object), id } : row.data;
-      await tx.runAsync(`INSERT INTO records(id,owner,kind,payload,revision,created_at)
-        SELECT ?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM pending WHERE id=? OR (owner=? AND ?='profile' AND json_extract(value,'$.kind')='profile'))
-        ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,revision=excluded.revision,created_at=excluded.created_at
-        WHERE records.owner=excluded.owner AND records.revision<=excluded.revision`,
-        id, owner, kind, JSON.stringify(payload), row.revision, row.created_at, id, owner, kind);
-    }
+    await mergeRemoteRows(tx, owner, kind, rows);
   });
+}
+
+export async function mergeRemoteRows(tx: LocalDB, owner: string, kind: WriteKind, rows: RemoteRow[]) {
+  for (const row of rows) {
+    if (row.user_id !== owner) throw Error('Account mismatch.');
+    const id = row.id.toLowerCase();
+    if (kind === 'profile') await tx.runAsync(`DELETE FROM records WHERE owner=? AND kind='profile' AND id<>?
+      AND NOT EXISTS(SELECT 1 FROM pending WHERE owner=? AND json_extract(value,'$.kind')='profile')`, owner, id, owner);
+    const payload = kind === 'jump' ? { ...(row.data as object), id } : row.data;
+    await tx.runAsync(`INSERT INTO records(id,owner,kind,payload,revision,created_at)
+      SELECT ?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM pending WHERE id=? OR (owner=? AND ?='profile' AND json_extract(value,'$.kind')='profile'))
+      ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,revision=excluded.revision,created_at=excluded.created_at
+      WHERE records.owner=excluded.owner AND records.revision<=excluded.revision`,
+      id, owner, kind, JSON.stringify(payload), row.revision, row.created_at, id, owner, kind);
+  }
 }
 export async function reconcileWrite(db: LocalDB, sent: Pending, next: Pending | null, revision?: number) {
   await db.withExclusiveTransactionAsync(async tx => {

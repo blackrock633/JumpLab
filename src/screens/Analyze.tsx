@@ -3,13 +3,13 @@ import { View } from 'react-native';
 import Native, { type AnalysisReceipt, type ImportedClip } from '../../modules/jump-analysis/src';
 import { displayHeight, summary, type JumpResult, type JumpType } from '../core/measurement';
 import { Button, Choices, Copy, Field } from './components';
-import { commitAnalysis, RejectedAnalysis, recoverAnalysis } from '../data/store';
+import { commitAnalysis, CorruptAnalysis, RejectedAnalysis, recoverAnalysis } from '../data/store';
 export function Analyze({ owner, onSaved }: { owner: string; onSaved: () => void }) {
   const [clip, setClip] = useState<ImportedClip | null>(null), [type, setType] = useState<JumpType>('standing');
   const [fps, setFPS] = useState(''), [confirmed, setConfirmed] = useState(false), [phase, setPhase] = useState<'idle' | 'picker' | 'analysis' | 'saving'>('idle'), [status, setStatus] = useState('');
   const [results, setResults] = useState<JumpResult[]>([]);
   const [unsaved, setUnsaved] = useState<AnalysisReceipt | null>(null);
-  const [recoverable, setRecoverable] = useState(false);
+  const [recovery, setRecovery] = useState<'retry' | 'corrupt' | null>(null);
   const mounted = useRef(true), imported = useRef<string | null>(null);
   useEffect(() => {
     mounted.current = true;
@@ -20,9 +20,7 @@ export function Analyze({ owner, onSaved }: { owner: string; onSaved: () => void
         setStatus('Recovered and saved the previous analysis on this iPhone.');
         onSaved();
       }
-    }).catch(error => {
-      if (mounted.current) { setRecoverable(!(error instanceof RejectedAnalysis)); setStatus(error.message); }
-    }).finally(() => { if (mounted.current) setPhase('idle'); });
+    }).catch(showRecoveryError).finally(() => { if (mounted.current) setPhase('idle'); });
     return () => {
       mounted.current = false;
       Native.cancel();
@@ -30,6 +28,14 @@ export function Analyze({ owner, onSaved }: { owner: string; onSaved: () => void
     };
   // The component is keyed by owner so the receipt is checked once per visit.
   }, [owner]);
+  function showRecoveryError(error: unknown) {
+    if (!mounted.current) return;
+    if (error instanceof RejectedAnalysis) setUnsaved(null);
+    setRecovery(error instanceof CorruptAnalysis ? 'corrupt' : error instanceof RejectedAnalysis ? null : 'retry');
+    setStatus(error instanceof CorruptAnalysis
+      ? 'Previous analysis data is damaged. You can discard it and import again. Saved estimates remain in Progress.'
+      : error instanceof Error ? error.message : 'Could not recover the previous analysis. Try again.');
+  }
   async function pick() {
     setPhase('picker'); setStatus('Opening your video library…'); setResults([]);
     try {
@@ -44,7 +50,6 @@ export function Analyze({ owner, onSaved }: { owner: string; onSaved: () => void
   }
   async function analyze() {
     if (!clip) return;
-    setRecoverable(false);
     setPhase('analysis'); setStatus('Analyzing on this iPhone. Keep JumpLab open.'); setResults([]);
     try {
       const receipt = await Native.analyze(clip.id, Number(fps), type, confirmed, owner);
@@ -61,7 +66,7 @@ export function Analyze({ owner, onSaved }: { owner: string; onSaved: () => void
   async function commit(receipt: AnalysisReceipt | null) {
     const found = receipt ? await commitAnalysis(owner, receipt) : await recoverAnalysis(owner);
     if (mounted.current) {
-      setUnsaved(null); setRecoverable(false);
+      setUnsaved(null); setRecovery(null);
       if (!found) setStatus('No estimates are waiting to be saved. You can import another video.');
       if (found) {
         setResults(found);
@@ -72,23 +77,27 @@ export function Analyze({ owner, onSaved }: { owner: string; onSaved: () => void
       }
     }
   }
+  async function retryRecovery(discardCorrupt: boolean) {
+    setPhase('saving');
+    try {
+      if (discardCorrupt) await Native.discardCorruptAnalysis(owner);
+      await commit(unsaved);
+    } catch (error) { showRecoveryError(error); }
+    finally { if (mounted.current) setPhase('idle'); }
+  }
   const totals = summary(results);
   return <View><Copy heading>Analyze a jump</Copy>
     <Copy>Film one athlete from the side with a fixed camera, full body and both feet visible, bright light and a level landing area. Keep a textured, stationary background visible in the corners. Begin with a quiet stance for half a second and include the complete landing.</Copy>
     <Copy>Use an original unretimed 24–240 FPS clip, 1–30 seconds, up to 4K / 250 MB. No frame selection or calibration required. Slow-motion edits and exports are currently unsupported.</Copy>
     <Choices label="Jump type" values={['standing', 'running', 'repeated']} value={type} onChange={setType} />
-    <Button title="Choose video" testID="choose-video" disabled={phase !== 'idle' || unsaved !== null} onPress={() => void pick()} />
+    <Button title="Choose video" testID="choose-video" disabled={phase !== 'idle' || unsaved !== null || recovery !== null} onPress={() => void pick()} />
     {clip ? <View><Field label="Original recording FPS" numeric value={fps} onChange={v => { setFPS(v); setConfirmed(false); }} />
       <Button title="I confirm this is the original, unretimed recording and the FPS matches my camera" selected={confirmed} onPress={() => setConfirmed(!confirmed)} />
       <Button title="Analyze on iPhone" disabled={phase !== 'idle' || !confirmed || clip.hasRetiming} onPress={() => void analyze()} /></View> : null}
     {phase === 'analysis' ? <Button title="Cancel analysis" onPress={() => Native.cancel()} /> : null}
     {status ? <Copy>{status}</Copy> : null}
-    {phase === 'idle' && (unsaved || recoverable) ? <Button title="Retry saving estimates" onPress={() => {
-      setPhase('saving');
-      void commit(unsaved).catch(e => {
-        if (mounted.current) { setStatus(e.message); if (e instanceof RejectedAnalysis) { setUnsaved(null); setRecoverable(false); } }
-      }).finally(() => { if (mounted.current) setPhase('idle'); });
-    }} /> : null}
+    {phase === 'idle' && recovery === 'corrupt' ? <Button title="Discard damaged analysis" onPress={() => void retryRecovery(true)} /> : null}
+    {phase === 'idle' && (unsaved || recovery === 'retry') ? <Button title="Retry saving estimates" onPress={() => void retryRecovery(false)} /> : null}
     {results.map((r, i) => <View key={r.id}><Copy heading>Jump {i + 1}</Copy><Copy>Estimated jump height: {displayHeight(r)}</Copy><Copy>Airtime: about {r.airtime.toFixed(2)} s ({(Math.floor(r.airtimeRange[0] * 100) / 100).toFixed(2)}–{(Math.ceil(r.airtimeRange[1] * 100) / 100).toFixed(2)} s timing range)</Copy><Copy muted>Experimental flight-time method. Timing range excludes posture and detector error.</Copy></View>)}
     {totals && totals.count > 1 ? <Copy>{totals.count} jumps · mean {Math.round(totals.meanM * 100)} cm · best {Math.round(totals.bestM * 100)} cm</Copy> : null}
     <Copy>Flight-time estimates assume comparable center-of-mass height at takeoff and landing. Running and repeated jumps are especially sensitive to posture and foot contact. These estimates are not reach height or force-plate measurements, and do not guide automatic progression.</Copy>

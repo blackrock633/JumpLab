@@ -5,9 +5,10 @@ import { Analyze } from '../src/screens/Analyze';
 import { Workout } from '../src/screens/Workout';
 import { generate, type Profile } from '../src/core/training';
 import Native, { type AnalysisReceipt } from '../modules/jump-analysis/src';
-import { commitAnalysis } from '../src/data/store';
-jest.mock('../modules/jump-analysis/src', () => ({ __esModule: true, default: { pick: jest.fn(), analyze: jest.fn(), cancel: jest.fn(), discard: jest.fn().mockResolvedValue(undefined) } }));
+import { commitAnalysis, CorruptAnalysis, recoverAnalysis } from '../src/data/store';
+jest.mock('../modules/jump-analysis/src', () => ({ __esModule: true, default: { pick: jest.fn(), analyze: jest.fn(), cancel: jest.fn(), discard: jest.fn().mockResolvedValue(undefined), discardCorruptAnalysis: jest.fn().mockResolvedValue(undefined) } }));
 jest.mock('../src/data/store', () => ({
+  CorruptAnalysis: class extends Error {},
   RejectedAnalysis: class extends Error {},
   recoverAnalysis: jest.fn().mockResolvedValue(null),
   commitAnalysis: jest.fn(async (_owner, r) => {
@@ -26,6 +27,35 @@ test('onboarding allows unknown strength, canonical units and schedule validatio
   await fireEvent.press(screen.getByRole('button', { name: 'Save profile and future plan' }));
   await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
   expect(onSave.mock.calls[0][0].knownSquatKg).toBeNull(); expect(onSave.mock.calls[0][0].weightKg).toBeCloseTo(70, 3);
+});
+
+test('damaged receipt can be discarded for this account and a new analysis can be saved', async () => {
+  jest.mocked(recoverAnalysis).mockRejectedValueOnce(new CorruptAnalysis());
+  jest.mocked(Native.pick).mockResolvedValue({ id: 'clip', playbackFPS: 60, duration: 2, bytes: 1000, hasRetiming: false });
+  jest.mocked(Native.analyze).mockResolvedValue(testReceipt(Array.from({ length: 120 }, (_, i) => i / 60)));
+  await render(<Analyze owner="A" onSaved={jest.fn()} />);
+  await screen.findByText(/Saved estimates remain in Progress/);
+  expect(screen.getByRole('button', { name: 'Choose video' })).toBeDisabled();
+  await fireEvent.press(screen.getByRole('button', { name: 'Discard damaged analysis' }));
+  expect(Native.discardCorruptAnalysis).toHaveBeenCalledWith('A');
+  await screen.findByText(/No estimates are waiting/);
+  await fireEvent.press(screen.getByRole('button', { name: 'Choose video' }));
+  await screen.findByLabelText('Original recording FPS');
+  await fireEvent.press(screen.getByRole('button', { name: /I confirm/ }));
+  await fireEvent.press(screen.getByRole('button', { name: 'Analyze on iPhone' }));
+  await screen.findByText(/Estimated jump height:/);
+});
+
+test('temporary receipt read failure offers retry and cannot authorize discard', async () => {
+  jest.mocked(recoverAnalysis).mockRejectedValueOnce(Error('Unlock this iPhone and retry saving.'));
+  await render(<Analyze owner="A" onSaved={jest.fn()} />);
+  await screen.findByText(/Unlock this iPhone/);
+  expect(screen.queryByRole('button', { name: 'Discard damaged analysis' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Choose video' })).toBeDisabled();
+  await fireEvent.press(screen.getByRole('button', { name: 'Retry saving estimates' }));
+  await screen.findByText(/No estimates are waiting/);
+  expect(screen.getByRole('button', { name: 'Choose video' })).toBeEnabled();
+  expect(Native.discardCorruptAnalysis).not.toHaveBeenCalled();
 });
 test('infeasible onboarding explains a retry without saving an invalid plan', async () => {
   const onSave = jest.fn(); await render(<ProfileForm initial={{ ...profile, days: [] }} onSave={onSave} />);

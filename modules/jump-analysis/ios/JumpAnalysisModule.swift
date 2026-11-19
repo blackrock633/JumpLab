@@ -115,20 +115,26 @@ public final class JumpAnalysisModule: Module {
       try self.receiptLock.withLock {
         guard self.receiptOwner == owner else { throw DetectionFailure.unsuitable("Analysis account changed.") }
         let url = self.receipts.appendingPathComponent(owner)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        guard let value = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
-          throw DetectionFailure.unsuitable("Saved analysis recovery data is unreadable.")
+        switch try AnalysisRecovery.read(url) {
+        case .missing: return nil
+        case .corrupt: return ["status": "corrupt"]
+        case .receipt(let value): return value
         }
-        return value
+      }
+    }
+    AsyncFunction("discardCorruptAnalysis") { (owner: String) -> Void in
+      try self.receiptLock.withLock {
+        guard self.receiptOwner == owner else { throw DetectionFailure.unsuitable("Analysis account changed.") }
+        try AnalysisRecovery.discardCorrupt(self.receipts.appendingPathComponent(owner))
       }
     }
     AsyncFunction("finishAnalysis") { (owner: String, id: String) in
       try self.receiptLock.withLock {
         guard self.receiptOwner == owner else { return }
         let url = self.receipts.appendingPathComponent(owner)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        let value = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
-        if value?["id"] as? String == id { try FileManager.default.removeItem(at: url) }
+        if case .receipt(let value) = try AnalysisRecovery.read(url), value["id"] as? String == id {
+          try FileManager.default.removeItem(at: url)
+        }
       }
     }
     AsyncFunction("analyze") { (id: String, fps: Double, type: String, confirmed: Bool, owner: String) async throws -> [String: Any] in

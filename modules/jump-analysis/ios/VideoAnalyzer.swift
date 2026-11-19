@@ -6,6 +6,40 @@ import os
 
 private let measurementLog = OSLog(subsystem: "app.jumplab", category: "Analysis")
 
+enum AnalysisRecovery {
+  case missing
+  case corrupt
+  case receipt([String: Any])
+
+  static func read(_ url: URL) throws -> Self {
+    let bytes: Data
+    do {
+      bytes = try Data(contentsOf: url)
+    } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+      return .missing
+    }
+    // I/O failures propagate. In particular, protected data may be readable
+    // after unlocking, so a failed read cannot authorize erasure.
+    guard let value = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+      let id = value["id"] as? String, UUID(uuidString: id) != nil,
+      value["type"] is String, value["fps"] is Double, value["confirmed"] is Bool,
+      value["createdAt"] is String, value["ids"] is [String],
+      let analysis = value["analysis"] as? [String: Any],
+      analysis["timestamps"] is [Double], analysis["playbackFPS"] is Double,
+      let events = analysis["events"] as? [[String: Any]],
+      events.allSatisfy({ $0["takeoff"] is [Double] && $0["landing"] is [Double] })
+    else { return .corrupt }
+    return .receipt(value)
+  }
+
+  @discardableResult
+  static func discardCorrupt(_ url: URL) throws -> Bool {
+    guard case .corrupt = try read(url) else { return false }
+    try FileManager.default.removeItem(at: url)
+    return true
+  }
+}
+
 // A rate-preserving edit can still skip or repeat capture time.
 func hasAmbiguousEdits(_ mappings: [CMTimeMapping]) -> Bool {
   guard !mappings.isEmpty else { return true }

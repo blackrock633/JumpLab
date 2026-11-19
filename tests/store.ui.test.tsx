@@ -1,9 +1,11 @@
 import type { LocalDB } from '../src/data/local';
 import * as store from '../src/data/store';
 import { accountClient } from '../src/data/auth';
+import { selectActivePlan } from '../src/core/queue';
+import Native from '../modules/jump-analysis/src';
 
 jest.mock('../modules/jump-analysis/src', () => ({
-  __esModule: true, default: { setAccount: jest.fn().mockResolvedValue(true) },
+  __esModule: true, default: { setAccount: jest.fn().mockResolvedValue(true), recoverAnalysis: jest.fn() },
 }));
 jest.mock('expo-crypto', () => ({ randomUUID: () => 'generated' }));
 jest.mock('../src/data/auth', () => ({ accountClient: jest.fn() }));
@@ -64,10 +66,9 @@ test.each(['remote', 'local'] as const)('conflicting profile and plan stay toget
   }) }));
   let plansAvailable = choice !== 'remote';
   const from = (table: string) => {
-    const request = { select: () => request, eq: () => request, order: () => request, limit: () => request, gte: () => request,
-      maybeSingle: async () => ({ error: null, data: profileRow }),
-      abortSignal: async () => table === 'plans' && !plansAvailable ? { error: { code: 'unavailable' }, data: null } :
-        { error: null, data: table === 'profiles' ? [profileRow] : table === 'plans' ? [remotePlan] : [] } };
+    const request = { select: () => request, eq: () => request, order: () => request, limit: () => request, filter: () => request,
+      maybeSingle: async () => table === 'plans' && !plansAvailable ? { error: { code: 'unavailable' }, data: null } :
+        { error: null, data: table === 'plans' ? remotePlan : profileRow } };
     return request;
   };
   jest.mocked(accountClient).mockResolvedValue({ client: { from, rpc }, isCurrent: () => true } as never);
@@ -83,7 +84,7 @@ test.each(['remote', 'local'] as const)('conflicting profile and plan stay toget
     expect.objectContaining({ id: 'local-log', state: 'pending' }),
   ]));
   if (choice === 'remote') {
-    await expect(store.resolveConflict('A', 'A', choice)).rejects.toThrow('Could not refresh');
+    await expect(store.resolveConflict('A', 'A', choice)).rejects.toThrow('Could not load the saved training plan');
     expect(await store.pending('A')).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'A', state: 'conflict', replacement: { id: 'draft' } }),
     ]));
@@ -105,4 +106,57 @@ test.each(['remote', 'local'] as const)('conflicting profile and plan stay toget
     expect(await store.records('A', 'plan')).toEqual([expect.objectContaining({ id: 'draft', revision: 1, payload: { ...localPlan, profileRevision: 3 } })]);
     expect(await store.pending('A')).toEqual([]);
   }
+});
+
+test('keeping the saved profile cannot activate an earlier plan after a concurrent pain pause', async () => {
+  await store.eraseLocalAccount('A');
+  await store.switchAccount('A', true);
+  const draft = { pain: false, planBinding: true };
+  const original = { id: 'A', user_id: 'A', revision: 2, data: draft };
+  const paused = { ...original, revision: 3, data: { ...draft, pain: true } };
+  let saved = original;
+  const plan = { id: 'saved-plan', user_id: 'A', revision: 1, data: { profileRevision: 2 }, created_at: new Date().toISOString() };
+  const filter = jest.fn(() => request);
+  const request = {
+    select: () => request, eq: () => request, order: () => request, limit: () => request, filter,
+    maybeSingle: async () => {
+      saved = paused;
+      return { error: null, data: plan };
+    },
+  };
+  const from = jest.fn((table: string) => {
+    if (table === 'plans') return request;
+    expect(table).toBe('profiles');
+    const profiles = { select: () => profiles, eq: () => profiles, maybeSingle: async () => ({ error: null, data: saved }) };
+    return profiles;
+  });
+  const rpc = () => ({ abortSignal: async () => ({ error: null, data: { code: '40001' } }) });
+  jest.mocked(accountClient).mockResolvedValue({ client: { from, rpc }, isCurrent: () => true } as never);
+  await store.saveBatch('A', [{ id: 'A', kind: 'profile', payload: draft }, { id: 'draft', kind: 'plan', payload: {} }]);
+  await store.sync('A');
+  await expect(store.resolveConflict('A', 'A', 'remote')).rejects.toThrow('saved profile is still current');
+  expect(from.mock.calls.map(([table]) => table)).toEqual(['profiles', 'plans', 'profiles']);
+  expect(filter).toHaveBeenCalledWith('data->>profileRevision', 'eq', '2');
+  const queue = await store.pending('A');
+  expect(queue).toEqual([expect.objectContaining({ state: 'conflict' })]);
+  const plans = await store.records<{ profileRevision?: number }>('A', 'plan');
+  expect(plans.map(record => record.id)).toEqual(['draft']);
+  expect(selectActivePlan(plans, (await store.records<typeof draft>('A', 'profile'))[0], queue)).toBeUndefined();
+
+  await store.resolveConflict('A', 'A', 'remote');
+  expect(await store.pending('A')).toEqual([]);
+  expect(await store.records('A', 'profile')).toEqual([expect.objectContaining({ revision: 3, payload: paused.data })]);
+  expect(from.mock.calls.at(-1)).toEqual(['profiles']);
+});
+
+test('a corrupt recovery receipt leaves previously saved measurements and pending writes intact', async () => {
+  await store.eraseLocalAccount('A');
+  await store.switchAccount('A', true);
+  await store.save('A', 'jump', { createdAt: new Date().toISOString(), heightM: 0.32 }, 'saved-jump');
+  jest.mocked(Native.recoverAnalysis).mockResolvedValueOnce({ status: 'corrupt' });
+  await expect(store.recoverAnalysis('A')).rejects.toBeInstanceOf(store.CorruptAnalysis);
+  jest.mocked(Native.recoverAnalysis).mockResolvedValueOnce(null);
+  await expect(store.recoverAnalysis('A')).resolves.toBeNull();
+  expect(await store.records('A', 'jump')).toEqual([expect.objectContaining({ id: 'saved-jump' })]);
+  expect(await store.pending('A')).toEqual([expect.objectContaining({ id: 'saved-jump', state: 'pending' })]);
 });

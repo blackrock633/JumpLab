@@ -1,5 +1,33 @@
 # JumpLab implementation handoff
 
+## Round 5, stage S1, iteration 4
+
+Ran from `8172bf0` on 2026-11-18 (MST) with macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node v24.21.0 and npm 12.2.0. All commands started in the JumpLab repository root. The direct simulator build uses the repository's writable DerivedData directory.
+
+| Command | Exit | Observed result |
+| --- | ---: | --- |
+| `test ! -e modules/jump-analysis/node_modules && test ! -e modules/jump-analysis/package-lock.json && git check-ignore modules/jump-analysis/package-lock.json` | 0 | Both nested install artifacts were absent. The lockfile path is ignored. |
+| `cd . && npm run -s typecheck` | 0 | TypeScript passed. |
+| `cd . && npm run -s lint` | 0 | Zero focused source check failures. |
+| `cd . && npx --no-install expo config --type public --json > /dev/null` | 0 | Expo public configuration resolved. |
+| `cd . && npm run test:unit` | 0 | 44 passed, zero skipped. Includes the local terminal error and inactive plan regression for rejected pairs. |
+| `cd . && npm run test:ui` | 0 | 37 passed across five suites. |
+| `npm run test:ui -- tests/app.ui.test.tsx -t 'leaving Analyze cancels pending analysis'` | 0 | The focused navigation regression passed. The name filter excluded the other 17 tests in that file. |
+| `cd . && npm run check:docs` | 0 | Documented paths and all 38 criterion IDs found. |
+| `cd . && npm run check:secrets` | 0 | Zero pattern matches across source, reachable Git patches and 155 existing client assets. |
+| `cd . && npm run test:native` | 0 | macOS synthetic detector, media and receipt tests passed. |
+| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/../.cache/DerivedData" CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | CoreSimulator connection invalid. Xcode reported “JumpLab.xcworkspace is not a workspace file.” The orchestrator previously passed its separately executed build. |
+| `cd . && npm run build:ios:simulator` | 1 | CocoaPods stopped at `cdn.cocoapods.org/all_pods_versions_a_9_3.txt` with “Couldn't resolve host name.” The script did not reach Xcode. |
+| `xcrun simctl list devices available` | 1 | CoreSimulator returned “Connection refused.” |
+| `supabase --version`, `docker info`, `psql --version` | 127 each | All three commands were unavailable on PATH. |
+| `npm run test:integration`, `npm run test:security` | 2 each | Both stopped at the disposable-backend guard. Zero real client assertions ran. |
+| `cd . && npm run evaluate:video` | 2 | Zero consented annotated clips. Real-video accuracy remains unverified. |
+| `git diff --check` | 0 | No whitespace errors. |
+
+JL-031 now has an app-level regression named “leaving Analyze cancels pending analysis and allows a new import without losing saved estimates.” It changes tabs while the mocked native promise is pending, checks cancellation and disposal of the imported clip, settles the promise as cancelled, and checks that the existing Progress estimate remains visible with zero new commits. Returning to Analyze imports a second clip with its own FPS and confirmation state. Physical iOS interruption and recovery remain unverified.
+
+JL-015 and R5-03 still need a Supabase CLI, a compatible container runtime and a disposable local stack. Apply the migrations and rerun the integration suite to observe generated and adapted plan acceptance, tampering rejection, rollback of profile and prescription writes, and quota consumption. The backend guard produced zero live assertions in this run.
+
 ## Round 5, stage S1, iteration 3
 
 Ran from `f1adb39` on 2026-11-18 (MST) with macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node v24.21.0 and npm 12.2.0. Commands started in the JumpLab root. The direct Xcode command uses the repository's DerivedData directory.
@@ -160,7 +188,7 @@ Host toolchain and exact setup commands are in [README](../README.md). The real-
 | JL-028 | Unverified | Privacy/retention docs, no content logs in app source and limited pattern scan. Capture seeded flows and verify provider retention against actual project settings. |
 | JL-029 | Unverified | Today, Analyze, Progress and Settings use real app state and honest empty states. UI tests preserve final-day access. Simulator rendering and HIG review require a linked build. |
 | JL-030 | Unverified | Component light/dark contrast, roles, scalable text and target-size tests pass. Render at accessibility text sizes and inspect physical VoiceOver behavior. |
-| JL-031 | Unverified | Mocked UI and real host SQLite cover failure before erase intent, interrupted receipt and Auth cleanup, account switching and retry after a failed prescription lookup. Test interruption and recovery on iOS. |
+| JL-031 | Unverified | Mocked UI covers leaving Analyze with native work pending, cancellation and cleanup, saved Progress and a subsequent import. Mocked UI and host SQLite also cover interrupted erase, account switching and prescription lookup retry. Test interruption and recovery on iOS. |
 | JL-032 | Unverified | Bounded compact chart reads and production analysis signposts are in source. No latency, memory, responsiveness or thermal observations were recorded. |
 | JL-033 | Blocked | Host unit, native and UI/store checks passed, including dependent writes and sign-out interruptions. Real database security and persistence assertions require a disposable backend. |
 | JL-034 | Failed | Fresh cached install passed. CocoaPods exited 1 before Xcode build. Complete native install with network/CMake, retain Podfile.lock and run simulator build and smoke on a host with CoreSimulator access. |

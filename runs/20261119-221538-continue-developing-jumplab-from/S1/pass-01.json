@@ -1,0 +1,10 @@
+{
+  "run": "20261119-221538-continue-developing-jumplab-from",
+  "stage": "S1",
+  "iteration": 1,
+  "engineer": "failed",
+  "local_code_checkpoint": "cd76c1f3a58ab440308d64ff7141d7d2896ff433",
+  "review": null,
+  "approved": false,
+  "checks": []
+}

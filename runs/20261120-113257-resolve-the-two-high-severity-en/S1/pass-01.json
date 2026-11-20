@@ -1,0 +1,56 @@
+{
+  "run": "20261120-113257-resolve-the-two-high-severity-en",
+  "stage": "S1",
+  "iteration": 1,
+  "engineer": "partial",
+  "local_code_checkpoint": "3640b41c93686a1965a713354df48cad625a2ec5",
+  "review": "approve",
+  "approved": true,
+  "checks": [
+    {
+      "name": "typecheck",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "lint",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "expo-config",
+      "status": "pass",
+      "required": false
+    },
+    {
+      "name": "ios-build:JumpLab",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:high severity dependency audit",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:unit tests",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:UI tests",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:docs check",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:secret scan",
+      "status": "pass",
+      "required": true
+    }
+  ]
+}

@@ -1,6 +1,119 @@
 # JumpLab implementation handoff
 
-## Round 7, stage S1
+## Round 7, stage S2
+
+I explicitly opened and read `claude.md/CLAUDE.md` before any other project work and then read the linked setup, backend, measurement, training, privacy and verification guides. Every later architect, engineer, reviewer and revision pass must explicitly open and read `claude.md/CLAUDE.md` first, then read the linked guide for each area being changed or reviewed. The companion `.claude/CLAUDE.md` imports that file.
+
+Iteration 1 ran on 2026-11-20 MST from `ca701cf`, the approved S1 checkpoint. The published parent is `7382f40`. The host was arm64 macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node 24.21.0, npm 12.2.0, CocoaPods 1.17.0 and Swift 6.2.4. Full command output is in the ignored `.cache/round7-s2-*.log` files. Commands ran at the repository root unless shown otherwise. The simulator build used the repository-local DerivedData path allowed by the spec.
+
+### Disk and command evidence
+
+`df -h / "$PWD"` showed the same values before and after the build attempts. Neither attempt reported ENOSPC. Both stopped at workspace loading. The current Xcode and CoreSimulator errors and the measured storage headroom are separate conditions.
+
+| Filesystem | Size | Used | Available | Capacity | Mount |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `/dev/disk3s1s1` | 228 GiB | 19 GiB | 8.1 GiB | 71% | `/` |
+| `/dev/disk3s5` | 228 GiB | 180 GiB | 8.1 GiB | 96% | `/System/Volumes/Data` |
+
+| Command | Exit | Observed result |
+| --- | ---: | --- |
+| `sw_vers`, `uname -m`, `xcodebuild -version`, `node --version`, `npm --version`, `pod --version`, `swift --version` | 0 each | Reported the toolchain above. |
+| `df -h / "$PWD"`, before and after the build attempts | 0 each | 8.1 GiB available on both paths. |
+| `du -sh .cache ios/Pods node_modules`, before the checks | 0 | 650 MiB, 1.4 GiB and 855 MiB. |
+| `COCOAPODS_DISABLE_STATS=true EXPO_NO_TELEMETRY=1 pod install --project-directory=ios --no-repo-update` | 0 | Installed 102 pods from 103 Podfile dependencies. The generated provider warned that the upstream internal `CoreModule` class cannot be referenced for automatic linking. |
+| `cmp ios/Pods/Manifest.lock ios/Podfile.lock`, `shasum ios/Podfile`, checksum comparison and `git diff --exit-code 7382f40 -- ios/Podfile.lock package.json` | 0 each | Manifest and lock are byte-identical. The Podfile SHA-1 and lock's `PODFILE CHECKSUM` both equal `412c7a2cb4b1f83736c98325eb2a40bf1ee91a23`. No tracked native lock or manifest change was needed. |
+| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/../.cache/DerivedData" CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | First diagnostic `DVTFilePathFSEvents: Failed to start fs event stream.` First simulator failure `CoreSimulatorService connection became invalid. Simulator services will no longer be available.` Opening the CoreSimulator log returned `Operation not permitted`. Xcode ended with `xcodebuild: error: 'JumpLab.xcworkspace' is not a workspace file.` |
+| `npm run build:ios:simulator` | 66 | CocoaPods completed. First Xcode diagnostic `DVTFilePathFSEvents: Failed to start fs event stream.` The same CoreSimulator connection and log failures followed. Xcode ended with `xcodebuild: error: 'ios/JumpLab.xcworkspace' is not a workspace file.` |
+| `xmllint --noout ios/JumpLab.xcworkspace/contents.xcworkspacedata` and `plutil -lint ios/JumpLab.xcodeproj/project.pbxproj ios/Pods/Pods.xcodeproj/project.pbxproj` | 0 each | Workspace XML and both project files parse. |
+| `xcodebuild -list -workspace "$PWD/ios/JumpLab.xcworkspace" -disableAutomaticPackageResolution` | 66 | Xcode rejected the absolute workspace path with the same workspace error. |
+| `cd ios && xcodebuild -list -project JumpLab.xcodeproj -disableAutomaticPackageResolution` | 0 | Listed the JumpLab scheme and both targets. Also reported Xcode log-store permission errors. |
+| `xcrun simctl list devices available` | 1 | CoreSimulator connection invalid, then `Unable to locate device set` with `NSPOSIXErrorDomain Code=61 "Connection refused"`. |
+| `test -x .cache/DerivedData/Build/Products/Debug-iphonesimulator/JumpLab.app/JumpLab` | 1 | Linked simulator executable was absent. |
+| `node scripts/check-secrets.mjs .cache/DerivedData/Build/Products/Debug-iphonesimulator/JumpLab.app` | not run | Requires a linked simulator app. |
+| Simulator boot, `CI=1 npx expo start --dev-client --port 8081` and `JUMPLAB_SIMULATOR_UDID=<udid> sh scripts/smoke-ios.sh` | not run | Requires a linked app and a usable device set. No XCTest pass or skip counts or screenshot attachments were produced. |
+| `npm run test:native` | 0 | 11 synthetic transition checks and 10 host timing, media and file checks passed. No failures or skips were reported. This covers synthetic inputs on macOS and includes no real athlete footage. |
+| `npm run -s typecheck`, `npm run -s lint` and `npx --no-install expo config --type public --json > /dev/null` | 0 each | TypeScript, focused lint and Expo public config passed. |
+| `npm run test:unit` and `npm run test:ui` | 0 each | 51 unit tests and 53 component/store tests across five suites. Both suites reported zero failures and skips. |
+| `EXPO_NO_TELEMETRY=1 npx --no-install expo export --platform ios --output-dir .cache/round7-s2-ios-export` | 0 | Metro processed 719 modules and produced a Hermes bundle and metadata. |
+| Same iOS export with `--dump-sourcemap --output-dir .cache/round7-s2-ios-mapped` and a read-only source-path check | 0 each | 714 mapped sources. No glob, minimatch, Zod or Forge modules. Of the audited Expo parent packages, the export contained only the CLI's Metro require bootstrap. |
+| `npm run check:secrets` and `node scripts/check-secrets.mjs .cache/round7-s2-ios-export` | 0 each | Zero pattern findings across source and reachable patches. The second invocation also scanned two exported client assets. |
+| `npm run check:dependencies` on a local copy of the `7382f40` manifests | 1 | Nine affected package nodes, six moderate and three high. |
+| `npm run check:dependencies` and `npm audit --omit=dev --json` on the S2 checkout | 1 each | Eight affected package nodes, six moderate and two high. Forge cleared. Both audits got advisory data from npm. |
+| Read-only Node integrity-entry count on `7382f40` and `HEAD`, `shasum -a 256 package-lock.json` and nested-install absence checks | 0 each | 53 missing integrity entries on each lock, all optional. Current SHA-256 is `ac5d69f120b3119a4d5bf0087ead778325140ad7f348f21622d9f666b8595315`. Neither nested install path exists. |
+| `npm ci` | not run | S2 used the installed tree and verified the approved S1 lock. The clean install and byte-for-byte comparison are recorded in historical S1 evidence below. |
+| `supabase --version`, `docker info` and `psql --version` | 127 each | All three commands are absent from PATH. |
+| `npm run check:database-types`, `npm run test:integration` and `npm run test:security`, with `JUMPLAB_TEST_DISPOSABLE` unset | 2 each | Local guards stopped the commands. Zero generated-type comparisons, backend requests or permissions assertions. |
+| `supabase start`, `supabase db reset`, `psql … -f supabase/tests/limits.sql` and live backend suites | not run | Requires Supabase CLI, a running container runtime and psql for an explicitly disposable loopback stack. No hosted project was contacted. |
+| `npm run evaluate:video` | 2 | `UNVERIFIED: no annotated real clips.` Zero evaluated clips and zero accuracy observations. |
+| `npm run check:docs`, `git diff --check` and `git diff --check 7382f40` | 0 each | Documentation paths and 38 IDs found. No whitespace errors. |
+| Read-only comparison of current IDs and historical Round 6 content | 0 | All 38 current IDs occur in order. Round 6 and older evidence is byte-identical to the S2 base. |
+| `git diff --stat 7382f40` and scoped `git diff --exit-code 7382f40 -- App.tsx src modules supabase tests scripts README.md package.json ios/Podfile.lock` | 0 each | The change since the published parent is confined to the handoff and the S1 transitive npm lock update. |
+
+### Audit and lockfile reconciliation
+
+The only package version difference from `7382f40` is `node-forge`, 1.4.0 → 1.4.3. S2 made no dependency changes. The audit reproduces the reduction from nine to eight affected package nodes, with three remaining root advisories and five dependent Expo packages. Missing integrity remains 53 → 53, all optional platform entries. S1's compatibility probes are preserved below. The fresh source map confirms the runtime JavaScript export scope, and a linked-app pattern scan remains outstanding.
+
+| Residual advisory | Dependency path and shipping scope | Compatibility limit |
+| --- | --- | --- |
+| [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5), high | `expo → @expo/cli@58.1.13 → zod@3.25.76`. Node CLI tooling. No Zod modules in the iOS export. | Fix starts at 4.6.6, outside the retained consumer's Zod 3 range. The SDK 58 CLI that removes Zod requires a newer native LogBox. The attempted SDK fallback also produced a Swift concurrency compiler error. |
+| [GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4), moderate | `expo → @expo/{cli,config,config-plugins,metro-config,fingerprint} → glob@13.0.6`. Node build tooling. No glob modules in the iOS export. | Fix starts at 14.0.2, outside the 13.x ranges. S1's 13.0.7 probe retained the advisory. The tooling update that removed glob changed the native dependency tree. |
+| [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249), moderate | `expo → @expo/fingerprint@0.21.5 → minimatch@10.2.6`, also reachable through audited glob paths. Node tooling. No minimatch modules in the iOS export. | Fix starts at 11.0.1. The retained fingerprint and the newer 0.21.10 examined in S1 both constrain minimatch to 10.x. |
+
+### Current acceptance status
+
+| ID | Status | Evidence and next verification |
+| --- | --- | --- |
+| JL-001 | Blocked (working Xcode workspace session → link the app) | CocoaPods and typecheck passed. The local build exited 66 before compiling. Clean installation evidence is preserved in S1. |
+| JL-002 | Local pass | This pass kept the configured workflow and mapped all original IDs. The scoped changes exclude orchestration. |
+| JL-003 | Blocked (consented annotated originals → trace production import and detector events) | The evaluation manifest supplied zero clips. |
+| JL-004 | Local pass | The scope check shows handoff-only S2 changes and a transitive tooling update from S1. |
+| JL-005 | Blocked (working simulator and disposable account → exercise picker and timing prefill) | Component tests exercised mocked import. No system-picker XCTest ran. |
+| JL-006 | Local pass | Host timing tests covered CFR, VFR, mapped timing and ambiguous timelines. Production footage variants remain outstanding. |
+| JL-007 | Blocked (consented annotated clips for all three jump types → verify tracking and repeated segmentation) | Synthetic native transitions passed. |
+| JL-008 | Blocked (annotated unsuitable clips → exercise production rejection and retry) | Synthetic and component rejection checks passed. |
+| JL-009 | Local pass | Unit tests checked the flight-time formula and boundaries. |
+| JL-010 | Unverified | Unit tests checked uncertainty, summaries and compatible comparisons. Verify chart rendering and persisted backend round trips. |
+| JL-011 | Blocked (annotated originals and fixture manifest → measure errors and coverage) | Fixture and matcher tests passed. The evaluator exited 2 with zero clips. |
+| JL-012 | Unverified | Native host tests covered cancellation and media limits. Verify installed-app interruption, repeated use and outgoing traffic. |
+| JL-013 | Unverified | Profile and conflict behavior have passing component/store coverage. Verify onboarding, persistent edits and plan replacement on iOS with local Auth. |
+| JL-014 | Local pass | Unit tests verified deterministic and complete prescriptions. |
+| JL-015 | Blocked (disposable loopback Supabase → verify plan parity and rollback) | Host planning scenarios passed. Live profile/plan verification requires the integration suite. |
+| JL-016 | Local pass | Host progression, spacing, deload and final-day rollover checks passed. |
+| JL-017 | Unverified | Host pain, fatigue and history guards passed. Verify persisted adaptation reasons against the applied schema. |
+| JL-018 | Unverified | SQLite and logging tests passed. Exercise process termination during logging and result saving on iOS. |
+| JL-019 | Unverified | Host pending-write and retry checks passed. Verify offline cold launch, analysis and reconnection on iOS. |
+| JL-020 | Blocked (disposable loopback Supabase → exercise concurrent writes and account switching) | Host erase, retry and acknowledgment checks passed. Live idempotency and conflicts remain outstanding. |
+| JL-021 | Unverified | Host-native file checks passed. Test provider interruption, cleanup and result reopening on iOS. |
+| JL-022 | Blocked (Supabase CLI, container runtime and psql → apply migrations and compare generated types) | The type-generation guard exited 2. Zero schema comparisons. |
+| JL-023 | Unverified | Redirect and mocked account tests passed. Verify signup, recovery, refresh and revoked tokens with iOS and local Auth. |
+| JL-024 | Blocked (disposable loopback Supabase → run the anonymous and two-account permission matrix) | Zero live permissions assertions. |
+| JL-025 | Blocked (disposable backend and linked simulator app → validate RPC boundaries and scan the app) | Pattern scans of source, history and two exported assets passed. |
+| JL-026 | Blocked (disposable backend and hosted Auth configuration access → run quota suites and inspect hosted controls) | Zero SQL or live quota assertions. |
+| JL-027 | Blocked (disposable backend and installed app → verify deletion, old tokens and restart) | Zero live deletion assertions. |
+| JL-028 | Unverified | Focused lint and pattern scans passed. Seeded runtime logs, traffic and provider retention remain outstanding. |
+| JL-029 | Blocked (linked app and working simulator → render navigation, history and charts) | Component tests passed. No rendered captures. |
+| JL-030 | Blocked (working simulator and signed iPhone → render accessibility states and exercise assistive technology) | Component assertions passed. Smoke rendering and physical VoiceOver remain outstanding. |
+| JL-031 | Unverified | Mocked fault and retry flows passed. Exercise failure and recovery in the installed app. |
+| JL-032 | Unverified | Zero clip latency, memory or responsiveness measurements. |
+| JL-033 | Blocked (disposable loopback Supabase → run the existing live suites) | 51 unit, 53 UI and 21 synthetic native checks passed. Zero live client assertions. |
+| JL-034 | Blocked (Xcode workspace and CoreSimulator access with sufficient disk headroom → rerun build and launch smoke) | Both simulator build commands exited 66 with `is not a workspace file`. CoreSimulator refused connections. No linked app or launch result. |
+| JL-035 | Failed | Docs and export/source scans passed. The advisory check exited 1 with the documented tooling residuals, and the linked-client scan remains outstanding. |
+| JL-036 | Blocked (Apple signing team, provisioned iPhone in Developer Mode, consented clips and Instruments for the device protocol → install and verify physical flows) | Record model, iOS, build, picker, offline, interruption, persistence and accessibility outcomes. |
+| JL-037 | Blocked (Apple signing team, provisioned iPhone in Developer Mode, consented clips and Instruments → measure repeated physical runs) | Zero device latency, peak memory, responsiveness or thermal observations. |
+| JL-038 | Local pass | The handoff maps every ID to current evidence or an outstanding prerequisite. Independent verification is pending. |
+
+### External prerequisites
+
+- Clear enough host storage to reach about 15 GB or more available, then check `df -h /` and `df -h "$PWD"` again before a full build. Current available space is 8.1 GiB. This pass performed no external cleanup.
+- Use an Xcode session that can open `JumpLab.xcworkspace` and where `xcrun simctl list devices available` succeeds. Rerun the build gate and scan the linked app. Boot an available iPhone simulator, start Metro, run the README smoke command, record XCTest passes, skips and attachment names from `.cache/LaunchSmoke.xcresult`, then stop Metro and shut down the simulator.
+- Install Supabase CLI, Docker or a compatible container runtime with a working Docker CLI, and psql. Follow [Backend](BACKEND.md) to start and reset an explicitly disposable loopback instance. Run the SQL limits check, compare generated types and run both real-client suites against that instance.
+- Obtain authorized read access to hosted Supabase Auth configuration in a separate verification pass to inspect signup and recovery limits, redirects, SMTP and provider retention.
+- Supply an Apple signing team and a provisioned iPhone with Developer Mode. Install the bundled Release build following [README](../README.md), record the device workflow outcomes and use Instruments to measure latency and peak memory over repeated runs.
+- Place consented original clips in `fixtures/media/` and annotations in `fixtures/manifest.json`. Include all three jump types, multiple events in a repeated clip, timing variants and expected rejections. Run `npm run evaluate:video` and record coverage and error results.
+
+## Historical verification
+
+### Round 7, stage S1
 
 I explicitly opened and read `claude.md/CLAUDE.md` before any other project work. Every later architect, engineer, reviewer and revision pass must explicitly open and read that file first, then read the linked guide for each area under work or review. Its companion `.claude/CLAUDE.md` imports it.
 
@@ -110,7 +223,6 @@ The production audit moved from nine to eight affected packages relative to the 
 - Provide an Apple development signing team and an iPhone provisioned with Developer Mode. Install the bundled Release build, record the manual workflows and capture repeated analysis latency and peak memory with Instruments.
 - Put consented originals in `fixtures/media/` and matching annotations in `fixtures/manifest.json`. Include the three jump types, multiple events in a repeated clip, timing variants and expected rejections. Run `npm run evaluate:video` and record coverage and reference errors.
 
-## Historical verification
 
 ### Round 6, stage S1
 

@@ -1,0 +1,61 @@
+{
+  "run": "20261120-091222-resume-jumplab-using-the-existin",
+  "stage": "S2",
+  "iteration": 2,
+  "engineer": "completed",
+  "local_code_checkpoint": "38720e562d0b3b90388967110b8653d0032451e1",
+  "review": "approve",
+  "approved": true,
+  "checks": [
+    {
+      "name": "typecheck",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "lint",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "expo-config",
+      "status": "pass",
+      "required": false
+    },
+    {
+      "name": "ios-build:JumpLab",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:unit tests",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:ui tests",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:docs check",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:secret scan",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:native host tests",
+      "status": "pass",
+      "required": false
+    },
+    {
+      "name": "spec:dependency advisories",
+      "status": "fail",
+      "required": false
+    }
+  ]
+}

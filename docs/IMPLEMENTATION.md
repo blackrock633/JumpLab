@@ -1,5 +1,106 @@
 # JumpLab implementation handoff
 
+## Round 8, high-severity audit remediation
+
+I explicitly opened and read `claude.md/CLAUDE.md` before other project work, then read README and the Round 7 S2 and S1 handoffs. Every later architect, engineer, reviewer and revision pass must explicitly open and read `claude.md/CLAUDE.md` first, then read the guides for the areas changed or reviewed.
+
+Stage S1 iteration 1 ran on 2026-11-20 MST from `38720e5` on arm64 macOS 15.7.3 (24G419), with Xcode 26.3 (17C529), Swift 6.2.4, Node 24.21.0, npm 12.2.0 and CocoaPods 1.17.0. Evidence is in the ignored `.cache/round8-*` and `.cache/audit-high-*.json` files. Both npm update attempts upgraded ExpoConstants and ExpoFont, so the prescribed stop condition applied. All checks below refer to the restored checkout unless marked as candidate checks.
+
+| Command | Exit | Observed result |
+| --- | ---: | --- |
+| `sw_vers`, `uname -m`, `xcodebuild -version`, `swift --version`, `node -v`, `npm -v`, `pod --version` | 0 each | Recorded the toolchain above. |
+| `npm ls zod @expo/cli @expo/log-box expo-modules-core expo-modules-jsi node-forge --omit=dev --all` | 0 | Zod 3.25.76 was reachable only from CLI 58.1.13. Forge was already 1.4.3. |
+| `npm audit --omit=dev --json` before changes and after restoring the baseline | 1 each | Both reports had six moderate, two high and zero critical findings. |
+| `npm view @expo/cli@58.1.21 dependencies devDependencies peerDependencies --json`, `npm view @expo/cli@58.1.18 dependencies devDependencies --json`, `npm view expo@58.0.16 dependencies --json` | 0 each | Both CLI releases list Zod under devDependencies. Expo accepts both under `^58.1.13`. |
+| `npm update @expo/cli` and, after restoring the baseline, `npm update @expo/cli --no-save` | 0 each | Produced byte-identical candidate locks. Both introduced the native changes detailed below. |
+| `npm view @expo/log-box@58.0.15 dependencies peerDependencies --json` | 0 | LogBox requires DOM WebView `^58.0.2` and declares Expo, React and React Native peers. |
+| `npm explain expo-constants expo-font expo-modules-autolinking` and `npm ls zod --omit=dev --all` on the candidate | 0 and 1 | The first identified the new peer and tooling requirements. The Zod query printed an empty tree. |
+| `npm audit --omit=dev --audit-level=high` and `npm audit --omit=dev --json` on the rejected candidate | 0 and 1 | Three moderate package findings. Zero high and critical findings. |
+| Verified and moved root `node_modules` out of the install path, then ran `npm ci --cache .cache/npm` | 0 | Installed 1,019 packages from the restored lock. npm blocked two optional install scripts. The lock SHA-256 before and after was `ac5d69f120b3119a4d5bf0087ead778325140ad7f348f21622d9f666b8595315`. Both nested install paths were absent under every local module. |
+| `npm audit --omit=dev --audit-level=high` and `npm run check:dependencies` on the restored tree | 1 each | Six moderate and two high findings. |
+| `COCOAPODS_DISABLE_STATS=true EXPO_NO_TELEMETRY=1 pod install --project-directory=ios --no-repo-update` | 0 | Installed 102 pods from 103 Podfile dependencies. The generated provider reported the pre-existing internal `CoreModule` warning. |
+| `cmp ios/Pods/Manifest.lock ios/Podfile.lock`, Podfile checksum comparison and `git diff --exit-code 38720e5 -- package.json package-lock.json ios` | 0 each | The manifest and native lock match. Both checked-in locks, the manifest and the tracked native project match the base. |
+| `xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/../.cache/DerivedData" CODE_SIGNING_ALLOWED=NO -quiet build` from `ios/` | 66 | `DVTFilePathFSEvents: Failed to start fs event stream.` Followed by `CoreSimulatorService connection became invalid.  Simulator services will no longer be available.` Opening the simulator log returned `Operation not permitted`. Final diagnostic was `xcodebuild: error: 'JumpLab.xcworkspace' is not a workspace file.` Compilation did not start. |
+| Workspace XML and app and Pods project syntax checks | 0 each | `xmllint` and `plutil` parsed the workspace and both projects. |
+| `npm run -s typecheck` and `npm run -s lint` | 0 each | TypeScript passed. Focused lint reported zero failures. |
+| `npm run test:unit`, `npm run test:ui`, `npm run test:native` | 0 each | 51 unit, 53 UI across five suites and 21 host-native checks passed. Zero reported failures or skips. |
+| `npx --no-install expo config --type public --json > /dev/null` | 0 | Public Expo config resolved. |
+| `EXPO_NO_TELEMETRY=1 npx --no-install expo export --platform ios --output-dir .cache/round8-ios-export` | 0 | Metro bundled 719 modules and wrote a Hermes bundle and metadata. |
+| `npm run check:docs`, `npm run check:secrets`, `node scripts/check-secrets.mjs .cache/round8-ios-export` | 0 each | Docs found the expected commands, paths and IDs. Pattern scans found zero matches, including two export assets. |
+| `xcrun simctl list devices available` | 1 | `Unable to locate device set`, with `NSPOSIXErrorDomain Code=61 "Connection refused"`. |
+| Simulator boot, Metro dev-client launch, LogBox overlay and `JUMPLAB_SIMULATOR_UDID=<udid> sh scripts/smoke-ios.sh` | not run | CoreSimulator did not expose a usable device set. No XCTest results or screenshot attachments. |
+| `npm run check:database-types`, `npm run test:integration`, `npm run test:security` with `JUMPLAB_TEST_DISPOSABLE` unset | 2 each | The local guards stopped each command. Zero live requests or schema comparisons. |
+| Candidate CocoaPods, build and app suites | not run | Both candidate locks failed the native dependency scope check. |
+| Orchestrator `ios-build:JumpLab` and physical iPhone verification | not run | The orchestrator gate is independent of this pass. Physical-device evidence remains pending. |
+
+### Audit and lockfile reconciliation
+
+The baseline and restored tree each produced eight affected package findings, six moderate and two high. The high advisory is Zod 3.25.76 via `expo@58.0.16 → @expo/cli@58.1.13 → zod@3.25.76`. The advisory is GHSA-mrhx-c7xc-m3w5 (CVE-2023-54404, CVSS 8.2), with a fix in 4.6.6. CLI 58.1.18 moved Zod into devDependencies. CLI 58.1.21 falls within Expo 58.0.16’s declared range and removed both high findings in the candidate, with three moderate findings remaining. [GitHub advisory](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)
+
+The candidate's CLI 58.1.21 requires `@expo/router-server@^58.0.23`. Router Server 58.0.23 requires peers `expo-constants@^58.0.16` and `expo-font@^58.0.12`. npm resolved both at the root, replacing 58.0.12 and 58.0.9 respectively. CLI also requires `@expo/prebuild-config@^58.0.20`, which added a nested autolinking tool at 58.1.0 alongside the root 58.0.13. An Expo pin bump would increase native drift and bring back Round 7 S1's Swift data-race compiler error in JSI 58.0.21 and later.
+
+Both rejected candidates had the following lockfile diff. Paths are relative to root `node_modules/`.
+
+| Change | Paths and versions |
+| --- | --- |
+| Moved and upgraded | `@expo/cli` 58.1.13 → `expo/node_modules/@expo/cli` 58.1.21. `@expo/metro-config` 58.0.15 → `expo/node_modules/@expo/metro-config` 58.0.23. |
+| Removed | `zod` 3.25.76. |
+| Changed Expo packages | `@expo/config` 58.0.6 → 58.0.12, `@expo/config-plugins` 58.0.10 → 58.0.13, `@expo/image-utils` 0.12.5 → 0.12.7, `@expo/inline-modules` 0.2.6 → 0.2.10, `@expo/log-box` 58.0.12 → 58.0.15, `@expo/metro-file-map` 58.0.5 → 58.0.6, `@expo/plist` 0.10.1 → 0.10.2, `@expo/prebuild-config` 58.0.14 → 58.0.20, `@expo/require-utils` 58.0.4 → 58.0.6, `@expo/router-server` 58.0.15 → 58.0.23, `@expo/schema-utils` 58.0.2 → 58.0.3, `expo-constants` 58.0.12 → 58.0.16, `expo-font` 58.0.9 → 58.0.12, `expo-server` 58.0.5 → 58.1.0. |
+| Changed platform tooling | `noxcturnal` and the eight `@noxcturnal/noxcturnal-*` entries for Darwin arm64/x64, Linux arm64/x64 GNU/musl and Windows arm64/x64 MSVC, 0.1.7 → 0.1.14. |
+| Added under `@expo/prebuild-config/node_modules/` | `@react-native/normalize-colors` 0.88.1 and `expo-modules-autolinking` 58.1.0. |
+| Added under `expo/node_modules/` | `@expo/env` 2.6.0, `@react-native/asset-utils`, `@react-native/debugger-frontend`, `@react-native/debugger-shell`, `@react-native/dev-middleware` and `@react-native/js-polyfills` all at 0.88.1, and `@react-native/dev-middleware/node_modules/ws` 7.5.14. |
+| Other addition and metadata changes | `expo-constants/node_modules/@expo/env` 2.6.0 was added. Root `@react-native/js-polyfills` 0.88.0 changed dev/peer flags and `deepmerge` 4.3.1 changed its dev flag. |
+
+Restoring the baseline left zero lockfile differences. Optional entries with a resolved URL and missing integrity numbered 53 at base, 46 in the rejected candidate and 53 after restoration. ExpoLogBox stayed at 58.0.12 in the regenerated Pods lock. The lock also retains Expo 58.0.16, ExpoModulesCore 58.0.23, ExpoModulesJSI 58.0.16 and the Podfile checksum `412c7a2cb4b1f83736c98325eb2a40bf1ee91a23`.
+
+| Moderate advisory | Restored production path and scope | Candidate path and compatibility limit |
+| --- | --- | --- |
+| [GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4) | `expo → @expo/{cli,config,config-plugins,fingerprint,metro-config} → glob@13.0.6` in Node build tooling. | Candidate retains `expo → @expo/fingerprint@0.21.5 → glob@13.0.6`. The fix starts at 14.0.2, outside the retained 13.x ranges. |
+| [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249) | `expo → @expo/fingerprint@0.21.5 → minimatch@10.2.6` and the same version through the audited glob paths. Node build tooling. | Candidate retains direct and glob-mediated fingerprint paths. The fix starts at 11.0.1, outside the retained 10.x ranges. |
+
+### Current acceptance status
+
+| ID | Status | Evidence and next verification |
+| --- | --- | --- |
+| JL-001 | Blocked (Xcode workspace access → verify the simulator build) | The restored tree passed clean install, CocoaPods and typecheck. Xcode exited 66 before compilation. |
+| JL-002 | Local pass | This pass kept the configured workflow and mapped all original IDs. The scoped changes exclude orchestration. |
+| JL-003 | Blocked (consented annotated originals → trace production import and detector events) | The evaluation manifest supplied zero clips. |
+| JL-004 | Local pass | The scope check confirmed that the rejected CLI update was discarded. The round changes the handoff and README audit evidence. |
+| JL-005 | Blocked (working simulator and disposable account → exercise picker and timing prefill) | Component tests exercised mocked import. No system-picker XCTest ran. |
+| JL-006 | Local pass | Host timing tests covered CFR, VFR, mapped timing and ambiguous timelines. Production footage variants remain outstanding. |
+| JL-007 | Blocked (consented annotated clips for all three jump types → verify tracking and repeated segmentation) | Synthetic native transitions passed. |
+| JL-008 | Blocked (annotated unsuitable clips → exercise production rejection and retry) | Synthetic and component rejection checks passed. |
+| JL-009 | Local pass | Unit tests checked the flight-time formula and boundaries. |
+| JL-010 | Unverified | Unit tests checked uncertainty, summaries and compatible comparisons. Verify chart rendering and persisted backend round trips. |
+| JL-011 | Blocked (annotated originals and fixture manifest → measure errors and coverage) | Fixture and matcher tests passed. The evaluator exited 2 with zero clips. |
+| JL-012 | Unverified | Native host tests covered cancellation and media limits. Verify installed-app interruption, repeated use and outgoing traffic. |
+| JL-013 | Unverified | Profile and conflict behavior have passing component/store coverage. Verify onboarding, persistent edits and plan replacement on iOS with local Auth. |
+| JL-014 | Local pass | Unit tests verified deterministic and complete prescriptions. |
+| JL-015 | Blocked (disposable loopback Supabase → verify plan parity and rollback) | Host planning scenarios passed. Live profile/plan verification requires the integration suite. |
+| JL-016 | Local pass | Host progression, spacing, deload and final-day rollover checks passed. |
+| JL-017 | Unverified | Host pain, fatigue and history guards passed. Verify persisted adaptation reasons against the applied schema. |
+| JL-018 | Unverified | SQLite and logging tests passed. Exercise process termination during logging and result saving on iOS. |
+| JL-019 | Unverified | Host pending-write and retry checks passed. Verify offline cold launch, analysis and reconnection on iOS. |
+| JL-020 | Blocked (disposable loopback Supabase → exercise concurrent writes and account switching) | Host erase, retry and acknowledgment checks passed. Live idempotency and conflicts remain outstanding. |
+| JL-021 | Unverified | Host-native file checks passed. Test provider interruption, cleanup and result reopening on iOS. |
+| JL-022 | Blocked (Supabase CLI, container runtime and psql → apply migrations and compare generated types) | The type-generation guard exited 2. Zero schema comparisons. |
+| JL-023 | Unverified | Redirect and mocked account tests passed. Verify signup, recovery, refresh and revoked tokens with iOS and local Auth. |
+| JL-024 | Blocked (disposable loopback Supabase → run the anonymous and two-account permission matrix) | Zero live permissions assertions. |
+| JL-025 | Blocked (disposable backend → validate RPC boundaries) | Pattern scans of source, history, the iOS export and the linked simulator app passed. |
+| JL-026 | Blocked (disposable backend and hosted Auth configuration access → run quota suites and inspect hosted controls) | Zero SQL or live quota assertions. |
+| JL-027 | Blocked (disposable backend and installed app → verify deletion, old tokens and restart) | Zero live deletion assertions. |
+| JL-028 | Unverified | Focused lint and pattern scans passed. Seeded runtime logs, traffic and provider retention remain outstanding. |
+| JL-029 | Blocked (working simulator → render navigation, history and charts) | Component tests passed and the app linked through the orchestrator. No rendered captures. |
+| JL-030 | Blocked (working simulator and signed iPhone → render accessibility states and exercise assistive technology) | Component assertions passed. Smoke rendering and physical VoiceOver remain outstanding. |
+| JL-031 | Unverified | Mocked fault and retry flows passed. Exercise failure and recovery in the installed app. |
+| JL-032 | Unverified | Zero clip latency, memory or responsiveness measurements. |
+| JL-033 | Blocked (disposable loopback Supabase → run the existing live suites) | 51 unit, 53 UI and 21 synthetic native checks passed. Zero live client assertions. |
+| JL-034 | Blocked (working CoreSimulator session → build and run launch smoke) | Xcode exited 66 at workspace loading and simctl exited 1 with connection refused. |
+| JL-035 | Failed | The rejected candidate cleared high and critical findings and left three moderate nodes. The restored checkout has six moderate and two high findings, so the high gate and `check:dependencies` both exit 1. Docs and the export pattern scan passed. |
+| JL-036 | Blocked (Apple signing team, provisioned iPhone in Developer Mode, consented clips and Instruments for the device protocol → install and verify physical flows) | Record model, iOS, build, picker, offline, interruption, persistence and accessibility outcomes. |
+| JL-037 | Blocked (Apple signing team, provisioned iPhone in Developer Mode, consented clips and Instruments → measure repeated physical runs) | Zero device latency, peak memory, responsiveness or thermal observations. |
+| JL-038 | Local pass | The handoff maps every ID to current evidence or an outstanding prerequisite. Independent verification is pending. |
+
 ## Round 7, stage S2
 
 I explicitly opened and read `claude.md/CLAUDE.md` before any other project work and then read the linked setup, backend, measurement, training, privacy and verification guides. Every later architect, engineer, reviewer and revision pass must explicitly open and read `claude.md/CLAUDE.md` first, then read the linked guide for each area being changed or reviewed. The companion `.claude/CLAUDE.md` imports that file.

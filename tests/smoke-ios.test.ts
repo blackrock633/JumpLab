@@ -51,6 +51,15 @@ test('simulator smoke requires an executable app before calling simctl', t => {
   assert.equal(existsSync(`${smoke.cwd}/calls`), false);
 });
 
+test('simulator smoke rejects a directory in place of the app executable', t => {
+  const smoke = fixture(t);
+  mkdirSync(`${smoke.cwd}/${app}/JumpLab`);
+  const run = smoke.run();
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /npm run build:ios:simulator/);
+  assert.equal(existsSync(`${smoke.cwd}/calls`), false);
+});
+
 test('simulator smoke tells the user to boot the target before installing', t => {
   const smoke = fixture(t);
   smoke.addBinary();

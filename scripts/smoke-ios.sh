@@ -3,7 +3,7 @@ set -eu
 : "${JUMPLAB_SIMULATOR_UDID:?Set the booted iOS simulator UDID}"
 app=.cache/DerivedData/Build/Products/Debug-iphonesimulator/JumpLab.app
 result_bundle=.cache/LaunchSmoke.xcresult
-if [ ! -x "$app/JumpLab" ]; then
+if [ ! -f "$app/JumpLab" ] || [ ! -x "$app/JumpLab" ]; then
   printf '%s\n' 'JumpLab simulator binary is missing. Run npm run build:ios:simulator first.' >&2
   exit 2
 fi

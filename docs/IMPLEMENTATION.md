@@ -4,46 +4,48 @@
 
 I explicitly opened and read `claude.md/CLAUDE.md` before any other project work. Every later architect, engineer, reviewer and revision pass must explicitly open and read that file first, then read the linked project guide for the area under work or review. Its companion `.claude/CLAUDE.md` imports it.
 
-Base `7382f40`, November 19, 2026 (MST). The arm64 Mac ran macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node v24.21.0, npm 12.2.0, CocoaPods 1.17.0 and Swift 6.2.4. Initial `df -h` showed 181 MiB available on both the system and workspace volumes, both at 100% displayed capacity. The final readings were 281 MiB available, with the workspace volume still at 100% displayed capacity. The orchestrator's supplied baseline reached CreateBuildDescription and failed with `NSPOSIXErrorDomain Code=28 No space left on device` under its DerivedData path. This stage used the repository root and kept generated evidence in the ignored `.cache/round7-s1-*.log` files. During ENOSPC some logs could only be captured by the command runner because `tee` itself reported no space.
+The published parent is `7382f40`. The current checkout starts at `16d064a`, which recovered the Expo pin, lockfile, README and this handoff from the interrupted pass. This rerun took place on November 20, 2026 (MST), on arm64 macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node v24.21.0, npm 12.2.0, CocoaPods 1.17.0 and Swift 6.2.4. Commands ran from the repository root except where shown. Full output is in the ignored `.cache/round7-s1-*.log` files. The earlier orchestrator build reported `NSPOSIXErrorDomain Code=28 No space left on device` during CreateBuildDescription. The local gate below failed earlier, at workspace loading, with more free space.
 
 | Command | Exit | Observed result |
 | --- | ---: | --- |
-| `sw_vers`, `xcodebuild -version`, `node --version`, `npm --version`, `pod --version`, `swift --version` | 0 each | Reported the toolchain above. |
-| `df -h /`, `df -h "$PWD"`, `du -sh .cache ios/Pods node_modules` | 0 each | Initial available space as above. The three directories were 243 MiB, 1.4 GiB and 762 MiB. |
-| `npm_config_cache="$PWD/.cache/npm" npm_config_fetch_retries=0 npm run check:dependencies` (baseline) | 1 | Registry responded. Nine production findings, six moderate and three high. See audit reconciliation below. |
-| Read-only one-off `node -e` count of entries with `resolved` and no `integrity` | 0 before and after | 53 → 32. Every missing entry was optional. npm regenerated the lockfile metadata. The remaining optional platform entries still lack integrity on this host. |
-| `npm audit fix --omit=dev --package-lock-only --cache .cache/npm --fetch-retries=0` | 1 on both attempts | First attempt hit ENOSPC fetching `@expo/cli`. After the clean start it resolved to three moderate findings, but updated native `expo-constants`, `expo-font` and `@expo/log-box`. The manifest diff was empty. Discarded the generated lockfile diff. |
-| Remove generated root and nested `node_modules`, then check root and nested paths with `test ! -e` | 0 for absence check | Nested install was initially present (6.2 MiB). Both installs and the nested lockfile were absent before the clean install. The cleanup freed space to 977 MiB. The first attempt to open the cleanup log itself hit ENOSPC. |
-| `npm update @expo/cli @expo/config @expo/config-plugins @expo/metro-config @expo/fingerprint node-forge glob minimatch --package-lock-only --cache .cache/npm --fetch-retries=0` | 0 | Targeted resolution still updated native packages. Discarded the generated lockfile diff before trying the allowed patch fallback. |
-| `npm view` for Expo 58.0.x, CLI/fingerprint/config releases and minimatch majors | 0 | Expo 58.0.26 is the newest stable 58.0.x on the configured registry. The CLI releases that remove Zod require a newer native LogBox. Fingerprint's latest compatible release still requires minimatch 10. |
-| `npm install --save-exact --package-lock-only expo@58.0.26 --cache .cache/npm --fetch-retries=0` | 0 | Selected Expo 58.0.26. Expo was the only direct pin changed. See generated lockfile version list below. |
-| `npm ci --fetch-retries=0 --cache .cache/npm` (first run) | 1 | The installer reported `TAR_ENTRY_ERROR ENOSPC: no space left on device, write`. `tee` also could not write the log. |
-| `df -h / "$PWD"` and `du -sh .cache/DerivedData .cache/tmp .cache/npm .cache/cocoapods-* .cache/ios-export* node_modules` after the first install | 0 for the disk and size commands | 172 MiB available. Measured directories in order were 0 B, 320 KiB, 327 MiB, 12 KiB, 2.4 MiB and 592 MiB. Removed the partial root install, `.cache/npm` and the stale `.cache/ios-export`. The absence check passed, leaving 1.1 GiB available before retry. |
-| `npm ci --fetch-retries=0 --cache .cache/npm` (clean retry) | 0 | Added 1,026 packages. npm blocked optional `@parcel/watcher` and `unrs-resolver` install scripts. The install audit, including dev dependencies, reported 22 moderate findings. |
-| `git diff --binary -- package-lock.json` before and after install, compared with `cmp` and `git diff --no-index --exit-code` | 0 each | The pre-install and post-install tracked diffs matched byte for byte. No checkpoint commit is needed to verify install stability. |
-| `test ! -e modules/jump-analysis/node_modules && test ! -e modules/jump-analysis/package-lock.json` | 0 | Both nested paths remained absent after install. |
-| `npm_config_cache="$PWD/.cache/npm" npm_config_fetch_retries=0 npm run check:dependencies` (final) | 1 | Three moderate findings, all from one production tooling advisory. No high-severity findings. |
-| `npm explain minimatch@10.2.6`, installed CLI source search, Hermes export string search | 0 for explain and CLI search; 1 for export search | Expo CLI loads fingerprint tooling for the build cache. Neither `@expo/fingerprint` nor `minimatch` appeared in the export string search. Linked native app was unavailable for inspection. |
-| `npm run -s typecheck`, `npm run -s lint` | 0 each | TypeScript resolved. Focused lint reported zero failures. |
+| `sw_vers`, `xcodebuild -version`, `node --version`, `npm --version`, `COCOAPODS_DISABLE_STATS=true pod --version`, `swift --version` | 0 each | Reported the toolchain above. |
+| `df -h /`, `df -h "$PWD"` (initial and after regression checks) | 0 each | Initially 9.9 GiB available on both filesystems, later 10 GiB. Both readings showed 66% capacity for `/` and 95% for the workspace Data volume. |
+| `du -sh .cache ios/Pods node_modules` (initial) | 0 | 252 MiB, 1.4 GiB and 817 MiB, respectively. |
+| `npm --prefix .cache/round7-s1-baseline run check:dependencies` with workspace-local npm cache and zero fetch retries | 1 | Baseline manifests copied from `7382f40` using `git show`. Registry reported nine affected nodes, six moderate and three high. See `.cache/round7-s1-audit-before-current.log`. |
+| Read-only `node -e` count of lockfile package entries with `resolved` and no `integrity` | 0 for each snapshot | `7382f40`: 53. Recovered lock: 32. All 32 remaining entries are optional. npm's generated metadata still lacks integrity for those artifacts. |
+| `npm audit fix --omit=dev --package-lock-only --cache ../npm --fetch-retries=0` and `npm update @expo/cli @expo/config @expo/config-plugins @expo/metro-config @expo/fingerprint node-forge glob minimatch --package-lock-only --cache ../npm --fetch-retries=0` in separate baseline probes | 1 and 0, respectively | Both left the probe manifests byte-identical to the parent but changed native Expo Font, Constants and LogBox. The audit fix still reported three moderate nodes. Both probe locks were discarded as candidates. |
+| `npm view expo@58 version --json`, `npm view @expo/cli@58.1.21 dependencies --json`, `npm view @expo/fingerprint@'^0.21.10' version --json`, `npm view @expo/fingerprint@0.21.10 dependencies --json`, `npm view minimatch@10 version --json`, `npm view minimatch@11.0.1 version`, `npm view expo@58.0.26 dependencies.@expo/fingerprint` | 0 each | Expo 58.0.26 is the newest stable 58.0.x on the configured registry. The available fingerprint and minimatch releases confirm the residual described below. |
+| `npm install --save-exact --package-lock-only expo@58.0.26 --cache ../npm --fetch-retries=0` in another baseline probe, then `cmp` on both manifests | 0 each | npm regenerated both recovered manifests byte for byte. Expo is the only changed direct pin. |
+| Remove generated root `node_modules`, then `test ! -e node_modules` | 0 | Confirmed a clean start before installation. |
+| `npm ci --fetch-retries=0 --cache .cache/npm` | 0 | Added 1,026 packages. npm blocked two optional install scripts, `@parcel/watcher` and `unrs-resolver`. The install audit includes dev dependencies and reported 22 moderate findings. |
+| `git diff --exit-code HEAD -- package-lock.json` and `shasum -a 256 package-lock.json` before and after install, then `test ! -e modules/jump-analysis/node_modules && test ! -e modules/jump-analysis/package-lock.json` | 0 each | The lock matches `16d064a` before and after. SHA-256 remained `4ddd483b58a5c2bd14f8cde1050347d32c9d940aab3095a2d1d6e48e7d85b7ad`. Both nested paths were absent after installation. |
+| `npm_config_cache="$PWD/.cache/npm" npm_config_fetch_retries=0 npm run check:dependencies` | 1 | Three moderate nodes from one build-tooling advisory. Zero high findings. See `.cache/round7-s1-audit-after-current.log`. |
+| `npm explain minimatch@10.2.6`, installed Expo CLI source search and export string search | 0, 0 and 1 | Expo CLI loads fingerprint for the build cache. The string search found neither package in the fresh export. |
+| `npm run -s typecheck`, `npm run -s lint` | 0 each | TypeScript and focused source checks passed. |
 | `npm run test:unit` | 0 | 51 passed, 0 failed, 0 skipped. |
 | `npm run test:ui` | 0 | 53 passed across five suites, 0 failed, 0 skipped. |
-| `EXPO_NO_TELEMETRY=1 npx --no-install expo config --type public --json > /dev/null` | 0 | Public config resolved. |
-| `EXPO_NO_TELEMETRY=1 npx --no-install expo export --platform ios --output-dir .cache/round7-ios-export` | 0 | Exported the 697-module Hermes bundle and metadata. |
-| `node scripts/check-secrets.mjs .cache/round7-ios-export` | 0 | Zero pattern findings across source, reachable Git patches and two freshly exported client assets. |
-| `npm run check:secrets` | 0 | Default-path invocation found zero patterns in source and reachable Git patches. It scanned zero assets because the fresh export used the Round 7 path. |
-| `npx --no-install expo install --check` with CI and telemetry disabled, then with a repository-local `EXPO_HOME` | 1 each | Optional diagnostic could not write Expo's external native-module cache (EPERM). The offline retry and the online retry below established the version recommendations. |
-| `EXPO_NO_CACHE=1 CI=1 EXPO_NO_TELEMETRY=1 npx --no-install expo install --check` | 1 | Expo recommends Crypto ~58.0.8, SecureStore ~58.0.3, SQLite ~58.0.18, React Native 0.88.1, safe-area-context ~5.11.1 and jest-expo ~58.0.15. The check describes recommended versions. The existing pins passed the S1 host checks and export. Native compatibility of the fallback remains unverified. |
-| `git diff --exit-code -- ios/Podfile.lock` | 0 | The tracked Pods lock still describes the pre-fallback generation. S2 must reconcile native pods. |
-| `npm run check:docs`, `git diff --check` | 0 each | Documented commands and 38 IDs found. No whitespace errors. |
-| CocoaPods install and lock/checksum validation, both simulator builds, CoreSimulator, launch smoke and linked app scan | not run | S2 work. The build gate's baseline failure is recorded above. |
-| `npm run test:native`, `npm run evaluate:video` | not run | S2 work. S1 recorded no native test or production footage results. |
-| Backend tool probes, disposable migration and SQL checks, generated type comparison, integration and security suites | not run | S2 work. S1 made no backend connections or live assertions. |
+| `EXPO_NO_TELEMETRY=1 npx --no-install expo config --type public --json > /dev/null` | 0 | Resolved public Expo configuration. |
+| `EXPO_NO_TELEMETRY=1 npx --no-install expo export --platform ios --output-dir .cache/round7-ios-export` | 0 | Bundled 697 modules and wrote the Hermes bundle and metadata. |
+| `node scripts/check-secrets.mjs .cache/round7-ios-export`, `npm run check:secrets` | 0 each | Zero pattern findings. Export invocation scanned two client assets along with source and reachable Git patches. The default invocation scanned source and history with zero assets. |
+| `EXPO_NO_CACHE=1 CI=1 EXPO_NO_TELEMETRY=1 npx --no-install expo install --check` | 1 | Optional recommendation diagnostic still asks for Crypto ~58.0.8, SecureStore ~58.0.3, SQLite ~58.0.18, React Native 0.88.1, safe-area-context ~5.11.1 and jest-expo ~58.0.15. The existing pins passed the S1 host checks and export. Native compatibility requires the linked build. |
+| `TMPDIR="$PWD/.cache/tmp" npm run test:native` | 0 | 11 Swift transition checks and 10 timing/media/file checks passed. Synthetic input only. |
+| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/../.cache/DerivedData" CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | First service failure: `CoreSimulatorService connection became invalid. Simulator services will no longer be available.` Xcode ended with `'JumpLab.xcworkspace' is not a workspace file.` No link. |
+| `xmllint --noout ios/JumpLab.xcworkspace/contents.xcworkspacedata`, `plutil -lint ios/JumpLab.xcodeproj/project.pbxproj` | 0 each | Workspace XML and project syntax passed. Both referenced projects exist. |
+| `TMPDIR="$PWD/.cache/tmp" xcrun simctl list devices available` | 1 | Failed to locate the device set, `NSPOSIXErrorDomain Code=61 "Connection refused"`. |
+| `npm run check:docs`, `git diff --check`, `git diff --check 7382f40` | 0 each | Documented commands and 38 IDs found. No whitespace errors. |
+| CocoaPods refresh and lock/checksum validation, `npm run build:ios:simulator` | not run | S2 owns CocoaPods setup and the scripted build. The tracked Pods lock still describes the pre-fallback tree. |
+| Launch smoke and linked app pattern scan | not run | No successful simulator link and CoreSimulator unavailable. No XCTest or screenshot results. |
+| `npm run evaluate:video` and disposable backend tool probes, migrations, SQL limits, generated type comparison, integration and security suites | not run | Deferred to S2. This pass collected zero athlete-clip observations and ran zero live backend assertions. |
+
+All nine S1 regression checks passed. The unit and UI suites ran 104 tests with zero failures or skips.
 
 ### Audit reconciliation
 
-The initial audit counted nine affected package nodes. The direct advisory groups were high-severity node-forge (21 advisory IDs in the before log), high-severity Zod ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)), moderate glob ([GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4)) and moderate minimatch. The final production audit lists one residual moderate advisory, [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249). The three reported nodes are `expo@58.0.26 → @expo/fingerprint@0.21.10 → minimatch@10.2.6`. Fingerprint is Node build-cache tooling, and inspection found no app import or corresponding string in the fresh Hermes export. The audited path uses `minimatch ^10.2.6`. The registry has no newer 10.x release. The available patched 11.0.1 is outside that range. The newest SDK 58.0.x still depends on fingerprint `^0.21.10`. npm's suggested Expo 52.0.49 is outside the allowed SDK. Recheck when Expo publishes a compatible SDK 58 fingerprint or a patched minimatch 10 backport.
+The baseline audit counted nine affected package nodes. Direct advisory groups were high-severity node-forge (21 IDs in the baseline log), high-severity Zod, moderate glob and moderate minimatch. The Expo patch updated node-forge to 1.4.3, removed Zod, and removed glob from the affected production paths. [Zod GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5), [glob GHSA-3g3m-2fjr-6pw4](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4).
 
-The allowed Expo patch fallback resolves the Zod and production glob paths and updates node-forge. Both lockfile-only attempts required native Expo changes, and the SDK 58 CLI releases that no longer depend on Zod require a newer native LogBox than the baseline. No other direct pin was changed. The native dependency recommendation diagnostic and the pending linked build leave the fallback's native compatibility open.
+The final production audit lists three package nodes from one moderate advisory. The audited path is `expo@58.0.26 → @expo/fingerprint@0.21.10 → minimatch@10.2.6`. Fingerprint runs in Node for the Expo CLI build cache. The fresh iOS export search returned no matches and a linked binary remains unavailable. The registry has one fingerprint release in Expo's `^0.21.10` range. It requires `minimatch ^10.2.6`. There is no newer 10.x release, and patched 11.0.1 is outside that range. npm's proposed Expo 52.0.49 is outside the allowed SDK. Recheck when an SDK 58 fingerprint release or a minimatch 10 backport is available. [Minimatch GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249).
+
+Both lockfile-only candidates changed native Expo packages. The SDK 58 CLI releases that remove Zod require a newer native LogBox than the baseline. The allowed fallback regenerated the recovered lock using Expo 58.0.26. React, React Native, Supabase, safe-area-context and the directly pinned Expo runtime siblings retain their versions. Native Expo dependencies selected by the fallback are listed below. The Expo recommendation diagnostic and native compatibility remain open.
 
 ### Generated lockfile versions
 
@@ -110,18 +112,18 @@ Nested paths are shown as parent → child. Entries that moved locations are lis
 
 | ID | Status | Evidence and next verification |
 | --- | --- | --- |
-| JL-001 | Blocked (free disk space and compatible native pod setup → link the simulator app) | Clean install, TypeScript and the iOS JS export passed. The supplied baseline build stopped at ENOSPC. |
+| JL-001 | Blocked (free disk space and compatible native pod setup → link the simulator app) | Clean install, TypeScript and the iOS JS export passed. The current local simulator gate exited 66 at workspace loading, and CoreSimulator refused connections. |
 | JL-002 | Local pass | S1 stayed within the configured workflow. All original IDs and their outstanding verification steps are carried forward here. |
 | JL-003 | Blocked (consented annotated originals → trace production picker and detector events) | No production athlete-clip observation in S1. |
 | JL-004 | Local pass | This change is limited to dependencies and verification docs. The marked Expo fallback introduced no product integrations. |
 | JL-005 | Blocked (working simulator and disposable account → run system picker coverage) | Component tests passed with mocked import. Native picker and FPS prefill remain to be exercised. |
 | JL-006 | Local pass | Host timing tests passed for CFR, VFR, mapped timing and ambiguous timelines. Production timing variants still need footage. |
-| JL-007 | Blocked (annotated clips for all three types → verify tracking and repeated segmentation) | S1 collected no native detector run or real segmentation data. |
+| JL-007 | Blocked (annotated clips for all three types → verify tracking and repeated segmentation) | Synthetic native transitions passed. No real segmentation data was collected. |
 | JL-008 | Blocked (annotated unsuitable clips → exercise production rejection and retry) | Host and component tests cover rejection and retry logic. Real rejection outcomes remain unobserved. |
 | JL-009 | Local pass | Unit tests verified the height calculation and boundaries. Component tests passed. |
 | JL-010 | Unverified | Unit tests passed for uncertainty, summaries and compatible comparisons. Verify rendered charts and a backend round trip. |
 | JL-011 | Blocked (annotated fixtures → run production evaluator and report errors) | Matching and rejection-only fixture unit tests passed. No accuracy observation in S1. |
-| JL-012 | Unverified | Verify native bounds and cleanup in S2, then capture installed-app interruption, repeated use and outgoing traffic. |
+| JL-012 | Unverified | Host-native cancellation and resource limit checks passed. Capture installed-app interruption, repeated use and outgoing traffic. |
 | JL-013 | Unverified | Profile and conflict behavior have component and SQLite coverage. Verify onboarding and persistent edits on iOS with local Auth. |
 | JL-014 | Local pass | Host deterministic program and complete prescription tests passed. |
 | JL-015 | Blocked (disposable loopback Supabase → verify parity and rollback) | Host planning scenarios passed. Live profile/plan behavior remains unverified. |
@@ -130,7 +132,7 @@ Nested paths are shown as parent → child. Entries that moved locations are lis
 | JL-018 | Unverified | Host SQLite reopen and logging tests passed. Verify process termination during workout logging and result saving in the installed app. |
 | JL-019 | Unverified | Host pending-write and retry tests passed. Verify offline cold launch, analysis and reconnection in the installed app. |
 | JL-020 | Blocked (disposable loopback Supabase → exercise concurrent writes and account switching) | Host erase, retry and acknowledgement tests passed. Live idempotency and conflict behavior remain unverified. |
-| JL-021 | Unverified | Verify native file tests in S2, then exercise provider interruption and result reopening on iOS. |
+| JL-021 | Unverified | Host-native file tests passed. Exercise provider interruption and result reopening on iOS. |
 | JL-022 | Blocked (Supabase CLI, container runtime and psql → apply migrations and compare generated types) | No applied schema or generated-type comparison in S1. |
 | JL-023 | Unverified | Host redirect and mocked account tests passed. Verify signup, recovery, refresh and revoked tokens with iOS and local Auth. |
 | JL-024 | Blocked (disposable loopback Supabase → run anonymous and two-account permissions matrix) | Zero live permissions assertions in S1. |
@@ -142,8 +144,8 @@ Nested paths are shown as parent → child. Entries that moved locations are lis
 | JL-030 | Blocked (working simulator and signed iPhone → render accessibility states and test assistive technology) | Component assertions passed. Smoke rendering and device VoiceOver are outstanding. |
 | JL-031 | Unverified | Mocked UI error, retry and recovery tests passed. Verify failures and recovery on installed iOS. |
 | JL-032 | Unverified | No latency, memory or responsiveness measurements in S1. |
-| JL-033 | Blocked (disposable loopback Supabase → run live integration and security suites) | 51 unit and 53 UI tests passed. Native host suites are deferred to S2. |
-| JL-034 | Blocked (free disk space and working CoreSimulator → rebuild and run launch smoke) | Clean install passed. The supplied orchestrator build stopped at ENOSPC at CreateBuildDescription. No S1 linked or launched app. |
+| JL-033 | Blocked (disposable loopback Supabase → run live integration and security suites) | 51 unit, 53 UI and 21 synthetic native checks passed. Live client assertions remain outstanding. |
+| JL-034 | Blocked (free disk space and working CoreSimulator → rebuild and run launch smoke) | Clean install passed. The local gate exited 66 with `'JumpLab.xcworkspace' is not a workspace file`. `simctl` exited 1 with connection refused. No linked or launched app. |
 | JL-035 | Failed | Docs and the fresh export scan passed. Audit exited 1 with the documented tooling residual, and Expo's native recommendation diagnostic and linked-app verification remain open. |
 | JL-036 | Blocked (Apple signing team, provisioned iPhone with Developer Mode and consented clips → install and verify device flows) | Record device, OS, build and actual picker, offline, interruption, persistence and accessibility outcomes. |
 | JL-037 | Blocked (Apple signing team, provisioned iPhone with Developer Mode, consented clips and Instruments → collect repeated device performance traces) | No device latency, peak memory or thermal observations. |
@@ -151,8 +153,8 @@ Nested paths are shown as parent → child. Entries that moved locations are lis
 
 ### External prerequisites
 
-- Free about 15 GB or more on the host volume. Check `df -h /` and `df -h "$PWD"` before rerunning CocoaPods, reconciling `ios/Podfile.lock` with the installed manifest and attempting the S2 simulator build. The fallback moves some native Expo packages and changes transitive versions, so regenerate the lock through CocoaPods.
-- Use an Xcode session where `xcrun simctl list devices available` succeeds. Boot an available iPhone simulator, start Metro and run the README smoke command. Record XCTest pass and skip counts and screenshot names as simulator evidence.
+- The current workspace had 9.9–10 GiB free. Bring host free space to about 15 GB or more. Check `df -h /` and `df -h "$PWD"` before rerunning CocoaPods, reconciling `ios/Podfile.lock` with the installed manifest and attempting the S2 simulator build. The fallback moves some native Expo packages and changes transitive versions, so regenerate the lock through CocoaPods.
+- Use an Xcode session that can open `ios/JumpLab.xcworkspace` and where `xcrun simctl list devices available` succeeds. Boot an available iPhone simulator, start Metro and run the README smoke command. Record XCTest pass and skip counts and screenshot names as simulator evidence.
 - Provide the Supabase CLI, a compatible container runtime and `psql`. Follow [Backend](BACKEND.md) to start and reset an explicitly disposable loopback stack, run the SQL limits check, compare generated types and execute both real-client suites.
 - Obtain read access to hosted Supabase Auth configuration for separate, authorized verification of signup and recovery limits, redirects, SMTP and provider retention.
 - Provide an Apple development signing team and an iPhone provisioned with Developer Mode. Install the bundled Release build, record the manual workflows and capture repeated analysis latency and peak memory with Instruments.

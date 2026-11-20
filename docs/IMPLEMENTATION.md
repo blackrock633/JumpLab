@@ -1,5 +1,41 @@
 # JumpLab implementation handoff
 
+## SDK 58 Expo CLI audit remediation
+
+The engineer explicitly opened and read `claude.md/CLAUDE.md` first, then read `README.md` and `docs/IMPLEMENTATION.md`. Every architect, engineer, reviewer and revision pass must open and read `claude.md/CLAUDE.md` first and record the read in its handoff.
+
+Stage S1 ran on 2026-11-20 MST from `adad5df`, which retains the approved `38720e5` dependency and native files. The host used Node 24.21.0, npm 12.2.0, CocoaPods 1.17.0 and Xcode 26.3 (17C529) on arm64 macOS 15.7.3. Command output and audit JSON are in the ignored `.cache/s1-audit/` directory.
+
+The installed baseline had `expo@58.0.16 → @expo/cli@58.1.13 → zod@3.25.76` and `node-forge@1.4.3`. npm reported six moderate, two high and zero critical findings. Both high entries traced to the same Zod advisory. Registry metadata identified 58.1.21 as the highest CLI release matching Expo's existing `^58.1.13` range. That release lists Zod in its development dependencies and has no production Zod dependency. The clean production tree and lock contain no Zod. [Zod advisory](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)
+
+### Resolved graph and native lock
+
+`npm update @expo/cli` reproduced the candidate dependency versions recorded in the previous round. It kept `package.json` unchanged. The package lock retains Expo 58.0.16, React Native 0.88.0, Expo Modules Core 58.0.23 and Expo Modules JSI 58.0.16. It has 46 optional entries with a tarball URL and no integrity hash, down from 53. npm reordered fields in some unchanged optional entries and updated the dependency flags on the existing root copies of `@react-native/js-polyfills` and `deepmerge`.
+
+| Package | Installed path and reason from `npm explain` |
+| --- | --- |
+| `@expo/cli@58.1.21` | `node_modules/expo/node_modules/@expo/cli` satisfies Expo's `^58.1.13` range. The CLI requires Metro Config 58.0.23, which also satisfies Expo's `~58.0.15` range. |
+| `expo-constants@58.0.16` and `expo-font@58.0.12` | The CLI depends on Router Server 58.0.23, which has `^58.0.16` and `^58.0.12` peer requirements respectively. The root copies satisfy Expo's existing `~58.0.12` and `~58.0.9` ranges. Expo Asset also uses the same Constants copy. |
+| `@expo/log-box@58.0.15` | The root copy satisfies the CLI's `^58.0.15` and Expo's `^58.0.12` ranges. DOM WebView remains at 58.0.2. |
+| `expo-modules-autolinking@58.0.13` | Expo resolves its `~58.0.13` dependency to the root copy. Both the Podfile's Expo bin entry point and Expo's Ruby script resolve from Expo. iOS resolver output identifies root React Native and the local JumpAnalysis pod. |
+| `expo-modules-autolinking@58.1.0` | The CLI's Prebuild Config 58.0.20 takes its `~58.1.0` requirement from its own nested `node_modules`. The iOS resolver test distinguishes this copy from Expo's root copy. |
+
+CocoaPods initially stopped on the older ExpoFont version in the snapshot. A targeted `pod update EXConstants ExpoFont ExpoLogBox --project-directory=ios --no-repo-update` regenerated `ios/Podfile.lock`. The diff contains those three pod versions and their spec checksums. A subsequent `pod install --project-directory=ios --no-repo-update` installed 102 pods and left the generated manifest identical to the lock. Both commands used a repository-local CocoaPods home. The Podfile checksum remains `412c7a2cb4b1f83736c98325eb2a40bf1ee91a23`.
+
+### Verification
+
+| Check | Observed result |
+| --- | --- |
+| Root `npm ci --cache .cache/npm --fetch-retries=0` | Exit 0. Installed 1,028 packages. npm blocked the optional Parcel watcher and UnRS resolver install scripts. No nested module install or nested module lock was present. SHA-256 before and after was `4c282118913840398337b4ab9943d36c568caddecbf6463c11bba8a0c45d5939`. |
+| `npm ls --omit=dev --all` and `npm ls zod --omit=dev --all` | Full production graph exited 0. The Zod query exited 1 with an empty tree. |
+| `npm audit --omit=dev --json` and `npm run check:dependencies -- --audit-level=high` | JSON exited 1 at the default threshold. It reported 0 info, 0 low, 3 moderate, 0 high and 0 critical. The high-severity gate exited 0. The three entries are `@expo/fingerprint@0.21.5`, `glob@13.0.6` and `minimatch@10.2.6`. Fingerprint depends on the affected glob and minimatch versions. [Glob advisory](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4) · [Minimatch advisory](https://github.com/advisories/GHSA-g3hv-75wg-m249) |
+| Typecheck, lint and Expo public config | All exited 0. Lint found zero failures. |
+| Unit, UI and host-native suites | All exited 0. 53 unit tests, 53 UI tests across five suites, and 21 host-native checks passed. Two new unit cases cover Zod removal and the iOS autolinking entry point. |
+| iOS JavaScript export, docs check and secret scans | All exited 0. Metro bundled 697 modules and produced a Hermes bundle. The pattern scans reported zero findings, including the separate scan of the two exported assets. |
+| Debug iOS simulator build from `ios/` | Used the orchestrator's Xcode arguments with repository-local DerivedData. Xcode exited 66 before compilation after CoreSimulator disconnected and opening its log returned `Operation not permitted`. The last diagnostic was `'JumpLab.xcworkspace' is not a workspace file`. Workspace XML and both Xcode project files parsed successfully. Listing the absolute workspace path reproduced exit 66. The independent simulator build gate is pending. |
+| Simulator launch and XCTest smoke | Pending. `xcrun simctl list devices available` exited 1 with `Connection refused`. No boot, app launch or screenshots were observed. |
+| Signing, physical iPhone installation and real footage | Pending. No signing, device installation or real-footage verification was performed. |
+
 ## Round 8, high-severity audit remediation
 
 I explicitly opened and read `claude.md/CLAUDE.md` before other project work, then read README and the Round 7 S2 and S1 handoffs. Every later architect, engineer, reviewer and revision pass must explicitly open and read `claude.md/CLAUDE.md` first, then read the guides for the areas changed or reviewed.

@@ -3,7 +3,7 @@ PODS:
     - ReactNativeDependencies
   - DoubleConversion (1.1.6):
     - ReactNativeDependencies
-  - EXConstants (58.0.12):
+  - EXConstants (58.0.16):
     - ExpoModulesCore
   - Expo (58.0.16):
     - ExpoModulesCore
@@ -40,11 +40,11 @@ PODS:
     - ExpoModulesCore
   - ExpoFileSystem (58.0.10):
     - ExpoModulesCore
-  - ExpoFont (58.0.9):
+  - ExpoFont (58.0.12):
     - ExpoModulesCore
   - ExpoKeepAwake (58.0.3):
     - ExpoModulesCore
-  - ExpoLogBox (58.0.12):
+  - ExpoLogBox (58.0.15):
     - React-Core
   - ExpoModulesCore (58.0.23):
     - ExpoModulesJSI
@@ -2213,15 +2213,15 @@ EXTERNAL SOURCES:
 SPEC CHECKSUMS:
   boost: 8502bfdc46e2804408af2e163049ece181009af4
   DoubleConversion: 501a575c40c0b50c89685762dd3e415e6bb26fb0
-  EXConstants: ff5c226215048137ea31d39fa460027a6daeeadc
+  EXConstants: aeda76f4be923fc719522ae162dd0b8c6483f9cc
   Expo: 994438bd7721559fbf1d33989f3166a87395c395
   ExpoAsset: a21dfe76346f30e600f2cc9cc835a6ede18ca39f
   ExpoCrypto: 33ede543a3747abbef071c3bd747135ccc4e4fd5
   ExpoDomWebView: b2a6d681b9d34c23b1f584321386ca8da1d36afb
   ExpoFileSystem: 6e11203047bfcbd318e6db7bb91210a95a4162b3
-  ExpoFont: 1d6500b0c451edb1f9676276b477fb1838190ccb
+  ExpoFont: daea737a2e3742f9a946f2884518e70dd37011f3
   ExpoKeepAwake: fd18a5d233329013c578030ad399d8e10b252b5f
-  ExpoLogBox: 14c42e5429c85e1e2acfb9316b4e821db8e40d42
+  ExpoLogBox: 9bfba7bb99c806b678703e6c62323f3c4785e706
   ExpoModulesCore: d9ce9d241e462bfe8bb0a4047a0ecf867afb4862
   ExpoModulesJSI: dc5ce2e1bab90688002a41af81bb6b9243ca1a99
   ExpoModulesWorklets: a09d8313cdc714c0e539f5f432445d6a9783d2e2

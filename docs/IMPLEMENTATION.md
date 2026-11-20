@@ -4,11 +4,11 @@
 
 I explicitly opened and read `claude.md/CLAUDE.md` before any other project work and then read the linked setup, backend, measurement, training, privacy and verification guides. Every later architect, engineer, reviewer and revision pass must explicitly open and read `claude.md/CLAUDE.md` first, then read the linked guide for each area being changed or reviewed. The companion `.claude/CLAUDE.md` imports that file.
 
-Iteration 1 ran on 2026-11-20 MST from `ca701cf`, the approved S1 checkpoint. The published parent is `7382f40`. The host was arm64 macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node 24.21.0, npm 12.2.0, CocoaPods 1.17.0 and Swift 6.2.4. Full command output is in the ignored `.cache/round7-s2-*.log` files. Commands ran at the repository root unless shown otherwise. The simulator build used the repository-local DerivedData path allowed by the spec.
+S2 iterations 1 and 2 ran on 2026-11-20 MST from `ca701cf` and `ebad5a1`, respectively. The approved S1 checkpoint is `ca701cf` and the published parent is `7382f40`. The host was arm64 macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node 24.21.0, npm 12.2.0, CocoaPods 1.17.0 and Swift 6.2.4. Engineer command output is in the ignored `.cache/round7-s2-*.log` files. Commands ran at the repository root unless shown otherwise. The engineer build attempts used repository-local DerivedData. The successful orchestrator gate used its own DerivedData path.
 
 ### Disk and command evidence
 
-`df -h / "$PWD"` showed the same values before and after the build attempts. Neither attempt reported ENOSPC. Both stopped at workspace loading. The current Xcode and CoreSimulator errors and the measured storage headroom are separate conditions.
+`df -h / "$PWD"` showed 8.1 GiB available before and after the iteration 1 engineer attempts and again in iteration 2. The required orchestrator gate compiled and linked between those measurements. The engineer attempts reported filesystem-event and access errors and stopped at workspace loading. No S2 build reported ENOSPC.
 
 | Filesystem | Size | Used | Available | Capacity | Mount |
 | --- | ---: | ---: | ---: | ---: | --- |
@@ -18,19 +18,21 @@ Iteration 1 ran on 2026-11-20 MST from `ca701cf`, the approved S1 checkpoint. Th
 | Command | Exit | Observed result |
 | --- | ---: | --- |
 | `sw_vers`, `uname -m`, `xcodebuild -version`, `node --version`, `npm --version`, `pod --version`, `swift --version` | 0 each | Reported the toolchain above. |
-| `df -h / "$PWD"`, before and after the build attempts | 0 each | 8.1 GiB available on both paths. |
+| `df -h / "$PWD"`, before and after the iteration 1 engineer attempts and in iteration 2 | 0 each | 8.1 GiB available on both paths. |
 | `du -sh .cache ios/Pods node_modules`, before the checks | 0 | 650 MiB, 1.4 GiB and 855 MiB. |
 | `COCOAPODS_DISABLE_STATS=true EXPO_NO_TELEMETRY=1 pod install --project-directory=ios --no-repo-update` | 0 | Installed 102 pods from 103 Podfile dependencies. The generated provider warned that the upstream internal `CoreModule` class cannot be referenced for automatic linking. |
 | `cmp ios/Pods/Manifest.lock ios/Podfile.lock`, `shasum ios/Podfile`, checksum comparison and `git diff --exit-code 7382f40 -- ios/Podfile.lock package.json` | 0 each | Manifest and lock are byte-identical. The Podfile SHA-1 and lock's `PODFILE CHECKSUM` both equal `412c7a2cb4b1f83736c98325eb2a40bf1ee91a23`. No tracked native lock or manifest change was needed. |
-| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/../.cache/DerivedData" CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | First diagnostic `DVTFilePathFSEvents: Failed to start fs event stream.` First simulator failure `CoreSimulatorService connection became invalid. Simulator services will no longer be available.` Opening the CoreSimulator log returned `Operation not permitted`. Xcode ended with `xcodebuild: error: 'JumpLab.xcworkspace' is not a workspace file.` |
-| `npm run build:ios:simulator` | 66 | CocoaPods completed. First Xcode diagnostic `DVTFilePathFSEvents: Failed to start fs event stream.` The same CoreSimulator connection and log failures followed. Xcode ended with `xcodebuild: error: 'ios/JumpLab.xcworkspace' is not a workspace file.` |
+| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/../.cache/DerivedData" CODE_SIGNING_ALLOWED=NO -quiet build` | 66 in both engineer iterations | First diagnostic `DVTFilePathFSEvents: Failed to start fs event stream.` First simulator failure `CoreSimulatorService connection became invalid. Simulator services will no longer be available.` Opening the CoreSimulator log returned `Operation not permitted`. Xcode ended with `xcodebuild: error: 'JumpLab.xcworkspace' is not a workspace file.` |
+| `npm run build:ios:simulator` | 66 in both engineer iterations | CocoaPods completed. First Xcode diagnostic `DVTFilePathFSEvents: Failed to start fs event stream.` The same CoreSimulator connection and log failures followed. Xcode ended with `xcodebuild: error: 'ios/JumpLab.xcworkspace' is not a workspace file.` |
+| Orchestrator `ios-build:JumpLab` from `ios/`, using the same Xcode arguments with `-derivedDataPath ~/agentloop/derived/b91624a537f3` | 0 | The S2 iteration 1 orchestrator compiled and linked the Debug simulator app in 19.6 seconds. The run's `checks/checks.json` and `checks/ios-build_JumpLab.log` record the result. The successful gate and valid workspace XML identify the exit-66 results as engineer-session limitations. |
 | `xmllint --noout ios/JumpLab.xcworkspace/contents.xcworkspacedata` and `plutil -lint ios/JumpLab.xcodeproj/project.pbxproj ios/Pods/Pods.xcodeproj/project.pbxproj` | 0 each | Workspace XML and both project files parse. |
 | `xcodebuild -list -workspace "$PWD/ios/JumpLab.xcworkspace" -disableAutomaticPackageResolution` | 66 | Xcode rejected the absolute workspace path with the same workspace error. |
 | `cd ios && xcodebuild -list -project JumpLab.xcodeproj -disableAutomaticPackageResolution` | 0 | Listed the JumpLab scheme and both targets. Also reported Xcode log-store permission errors. |
-| `xcrun simctl list devices available` | 1 | CoreSimulator connection invalid, then `Unable to locate device set` with `NSPOSIXErrorDomain Code=61 "Connection refused"`. |
-| `test -x .cache/DerivedData/Build/Products/Debug-iphonesimulator/JumpLab.app/JumpLab` | 1 | Linked simulator executable was absent. |
-| `node scripts/check-secrets.mjs .cache/DerivedData/Build/Products/Debug-iphonesimulator/JumpLab.app` | not run | Requires a linked simulator app. |
-| Simulator boot, `CI=1 npx expo start --dev-client --port 8081` and `JUMPLAB_SIMULATOR_UDID=<udid> sh scripts/smoke-ios.sh` | not run | Requires a linked app and a usable device set. No XCTest pass or skip counts or screenshot attachments were produced. |
+| `xcrun simctl list devices available` | 1 in both engineer iterations | CoreSimulator connection invalid, then `Unable to locate device set` with `NSPOSIXErrorDomain Code=61 "Connection refused"`. |
+| `test -x .cache/DerivedData/Build/Products/Debug-iphonesimulator/JumpLab.app/JumpLab` | 1 | The engineer-local path had no executable after its build attempt. |
+| `test -x` and `file` on the orchestrator's `JumpLab.app/JumpLab` | 0 each | Iteration 2 inspected the gate's Mach-O executable, with arm64 and x86_64 slices. |
+| `node scripts/check-secrets.mjs ~/agentloop/derived/b91624a537f3/Build/Products/Debug-iphonesimulator/JumpLab.app` | 0 | Iteration 2 scan of the gate product found zero pattern matches across 155 client asset files, source and reachable Git patches. The app was read in place. |
+| Simulator boot, `CI=1 npx expo start --dev-client --port 8081` and `JUMPLAB_SIMULATOR_UDID=<udid> sh scripts/smoke-ios.sh` | not run | CoreSimulator did not expose a usable device set to either engineer session. No XCTest pass or skip counts or screenshot attachments were produced. |
 | `npm run test:native` | 0 | 11 synthetic transition checks and 10 host timing, media and file checks passed. No failures or skips were reported. This covers synthetic inputs on macOS and includes no real athlete footage. |
 | `npm run -s typecheck`, `npm run -s lint` and `npx --no-install expo config --type public --json > /dev/null` | 0 each | TypeScript, focused lint and Expo public config passed. |
 | `npm run test:unit` and `npm run test:ui` | 0 each | 51 unit tests and 53 component/store tests across five suites. Both suites reported zero failures and skips. |
@@ -38,7 +40,7 @@ Iteration 1 ran on 2026-11-20 MST from `ca701cf`, the approved S1 checkpoint. Th
 | Same iOS export with `--dump-sourcemap --output-dir .cache/round7-s2-ios-mapped` and a read-only source-path check | 0 each | 714 mapped sources. No glob, minimatch, Zod or Forge modules. Of the audited Expo parent packages, the export contained only the CLI's Metro require bootstrap. |
 | `npm run check:secrets` and `node scripts/check-secrets.mjs .cache/round7-s2-ios-export` | 0 each | Zero pattern findings across source and reachable patches. The second invocation also scanned two exported client assets. |
 | `npm run check:dependencies` on a local copy of the `7382f40` manifests | 1 | Nine affected package nodes, six moderate and three high. |
-| `npm run check:dependencies` and `npm audit --omit=dev --json` on the S2 checkout | 1 each | Eight affected package nodes, six moderate and two high. Forge cleared. Both audits got advisory data from npm. |
+| `npm run check:dependencies` and `npm audit --omit=dev --json` on the S2 checkout | 1 each | Iteration 1 reported eight affected package nodes (six moderate, two high), including in the orchestrator check. Iteration 2 reported 25 (23 moderate, two high) on the same lock. The JSON contains the same three root advisory IDs and 22 dependent entries, and reports no fix available. Forge remains cleared. |
 | Read-only Node integrity-entry count on `7382f40` and `HEAD`, `shasum -a 256 package-lock.json` and nested-install absence checks | 0 each | 53 missing integrity entries on each lock, all optional. Current SHA-256 is `ac5d69f120b3119a4d5bf0087ead778325140ad7f348f21622d9f666b8595315`. Neither nested install path exists. |
 | `npm ci` | not run | S2 used the installed tree and verified the approved S1 lock. The clean install and byte-for-byte comparison are recorded in historical S1 evidence below. |
 | `supabase --version`, `docker info` and `psql --version` | 127 each | All three commands are absent from PATH. |
@@ -51,7 +53,7 @@ Iteration 1 ran on 2026-11-20 MST from `ca701cf`, the approved S1 checkpoint. Th
 
 ### Audit and lockfile reconciliation
 
-The only package version difference from `7382f40` is `node-forge`, 1.4.0 → 1.4.3. S2 made no dependency changes. The audit reproduces the reduction from nine to eight affected package nodes, with three remaining root advisories and five dependent Expo packages. Missing integrity remains 53 → 53, all optional platform entries. S1's compatibility probes are preserved below. The fresh source map confirms the runtime JavaScript export scope, and a linked-app pattern scan remains outstanding.
+The only package version difference from `7382f40` is `node-forge`, 1.4.0 → 1.4.3. S2 made no dependency changes. The production audit went from nine affected package nodes on the published parent to eight in S2 iteration 1. The latest audit reports 25 because npm lists more dependent Expo packages under the same three root advisories, including native runtime packages reached through the shared Expo dependency. The export source map contains none of the three affected tooling modules. Missing integrity remains 53 → 53, all optional platform entries. S1's compatibility probes are preserved below. Both the separate JavaScript export and the linked simulator app passed the limited pattern scan.
 
 | Residual advisory | Dependency path and shipping scope | Compatibility limit |
 | --- | --- | --- |
@@ -63,7 +65,7 @@ The only package version difference from `7382f40` is `node-forge`, 1.4.0 → 1.
 
 | ID | Status | Evidence and next verification |
 | --- | --- | --- |
-| JL-001 | Blocked (working Xcode workspace session → link the app) | CocoaPods and typecheck passed. The local build exited 66 before compiling. Clean installation evidence is preserved in S1. |
+| JL-001 | Local pass | S1's clean `npm ci` reproduced the same lockfile. S2's CocoaPods setup, typecheck and required orchestrator simulator link passed. |
 | JL-002 | Local pass | This pass kept the configured workflow and mapped all original IDs. The scoped changes exclude orchestration. |
 | JL-003 | Blocked (consented annotated originals → trace production import and detector events) | The evaluation manifest supplied zero clips. |
 | JL-004 | Local pass | The scope check shows handoff-only S2 changes and a transitive tooling update from S1. |
@@ -87,25 +89,25 @@ The only package version difference from `7382f40` is `node-forge`, 1.4.0 → 1.
 | JL-022 | Blocked (Supabase CLI, container runtime and psql → apply migrations and compare generated types) | The type-generation guard exited 2. Zero schema comparisons. |
 | JL-023 | Unverified | Redirect and mocked account tests passed. Verify signup, recovery, refresh and revoked tokens with iOS and local Auth. |
 | JL-024 | Blocked (disposable loopback Supabase → run the anonymous and two-account permission matrix) | Zero live permissions assertions. |
-| JL-025 | Blocked (disposable backend and linked simulator app → validate RPC boundaries and scan the app) | Pattern scans of source, history and two exported assets passed. |
+| JL-025 | Blocked (disposable backend → validate RPC boundaries) | Pattern scans of source, history, the iOS export and the linked simulator app passed. |
 | JL-026 | Blocked (disposable backend and hosted Auth configuration access → run quota suites and inspect hosted controls) | Zero SQL or live quota assertions. |
 | JL-027 | Blocked (disposable backend and installed app → verify deletion, old tokens and restart) | Zero live deletion assertions. |
 | JL-028 | Unverified | Focused lint and pattern scans passed. Seeded runtime logs, traffic and provider retention remain outstanding. |
-| JL-029 | Blocked (linked app and working simulator → render navigation, history and charts) | Component tests passed. No rendered captures. |
+| JL-029 | Blocked (working simulator → render navigation, history and charts) | Component tests passed and the app linked through the orchestrator. No rendered captures. |
 | JL-030 | Blocked (working simulator and signed iPhone → render accessibility states and exercise assistive technology) | Component assertions passed. Smoke rendering and physical VoiceOver remain outstanding. |
 | JL-031 | Unverified | Mocked fault and retry flows passed. Exercise failure and recovery in the installed app. |
 | JL-032 | Unverified | Zero clip latency, memory or responsiveness measurements. |
 | JL-033 | Blocked (disposable loopback Supabase → run the existing live suites) | 51 unit, 53 UI and 21 synthetic native checks passed. Zero live client assertions. |
-| JL-034 | Blocked (Xcode workspace and CoreSimulator access with sufficient disk headroom → rerun build and launch smoke) | Both simulator build commands exited 66 with `is not a workspace file`. CoreSimulator refused connections. No linked app or launch result. |
-| JL-035 | Failed | Docs and export/source scans passed. The advisory check exited 1 with the documented tooling residuals, and the linked-client scan remains outstanding. |
+| JL-034 | Unverified | The required orchestrator build linked the simulator app (exit 0). In the engineer session CoreSimulator refused connections. Run the launch smoke in a working simulator session and record the XCTest results. |
+| JL-035 | Failed | Docs and the export, source and linked-app scans passed. The production advisory check still exits 1 with the documented tooling residuals. Simulator smoke and live backend verification remain outstanding. |
 | JL-036 | Blocked (Apple signing team, provisioned iPhone in Developer Mode, consented clips and Instruments for the device protocol → install and verify physical flows) | Record model, iOS, build, picker, offline, interruption, persistence and accessibility outcomes. |
 | JL-037 | Blocked (Apple signing team, provisioned iPhone in Developer Mode, consented clips and Instruments → measure repeated physical runs) | Zero device latency, peak memory, responsiveness or thermal observations. |
 | JL-038 | Local pass | The handoff maps every ID to current evidence or an outstanding prerequisite. Independent verification is pending. |
 
 ### External prerequisites
 
-- Clear enough host storage to reach about 15 GB or more available, then check `df -h /` and `df -h "$PWD"` again before a full build. Current available space is 8.1 GiB. This pass performed no external cleanup.
-- Use an Xcode session that can open `JumpLab.xcworkspace` and where `xcrun simctl list devices available` succeeds. Rerun the build gate and scan the linked app. Boot an available iPhone simulator, start Metro, run the README smoke command, record XCTest passes, skips and attachment names from `.cache/LaunchSmoke.xcresult`, then stop Metro and shut down the simulator.
+- Check `df -h /` and `df -h "$PWD"` before a full clean build and allow about 15 GB of free host storage as planning headroom. The required gate already linked with 8.1 GiB available. If a clean build reports ENOSPC, have the host owner free space and remeasure before retrying.
+- Use an Xcode session where `xcrun simctl list devices available` succeeds. Run `npm run build:ios:simulator` there to populate the repository-local product path used by the smoke script. Boot an available iPhone simulator, start Metro, run the README smoke command, record XCTest passes, skips and attachment names from `.cache/LaunchSmoke.xcresult`, then stop Metro and shut down the simulator.
 - Install Supabase CLI, Docker or a compatible container runtime with a working Docker CLI, and psql. Follow [Backend](BACKEND.md) to start and reset an explicitly disposable loopback instance. Run the SQL limits check, compare generated types and run both real-client suites against that instance.
 - Obtain authorized read access to hosted Supabase Auth configuration in a separate verification pass to inspect signup and recovery limits, redirects, SMTP and provider retention.
 - Supply an Apple signing team and a provisioned iPhone with Developer Mode. Install the bundled Release build following [README](../README.md), record the device workflow outcomes and use Instruments to measure latency and peak memory over repeated runs.

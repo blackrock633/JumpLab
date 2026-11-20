@@ -1,5 +1,102 @@
 # JumpLab implementation handoff
 
+## Round 6, stage S1
+
+I explicitly opened and read `claude.md/CLAUDE.md` before any other project work. For every subsequent engineer, reviewer and revision pass, explicitly open and read that file first, then read the linked guide for the area under review and this handoff.
+
+Verified from `c4f9deb` on November 19, 2026 (MST). The arm64 Mac ran macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Swift 6.2.4, CocoaPods 1.17.0, Ruby 4.0.9, Node v24.21.0 and npm 12.2.0. Commands started in the repository root except where shown.
+
+| Command | Exit | Observed result |
+| --- | ---: | --- |
+| `sw_vers`, `xcodebuild -version`, `node --version`, `npm --version`, `pod --version`, `swift --version`, `ruby --version`, `uname -m` | 0 each | Reported the versions and architecture above. |
+| `cmake --version` | 127 | CMake was absent. CocoaPods used the supported prebuilts on the successful run. |
+| `ls -ld modules/jump-analysis/node_modules modules/jump-analysis/node_modules/react-native modules/jump-analysis/package-lock.json` | 0 | Both ignored install artifacts were present, with a second copy of React Native. |
+| `find modules/jump-analysis/node_modules -depth -delete && unlink modules/jump-analysis/package-lock.json` | 0 | Removed the two ignored paths. |
+| `npm ci --cache .cache/npm --fetch-retries=0` | 0 | Clean online install added 1,019 packages and audited 1,020. The install audit reported 24 moderate and three high vulnerabilities including dev dependencies. npm blocked install scripts for `@parcel/watcher` and `unrs-resolver`. No offline retry was needed. |
+| `test ! -e modules/jump-analysis/node_modules && test ! -e modules/jump-analysis/package-lock.json`, `git diff --exit-code -- package-lock.json` | 0 each | Both ignored artifacts stayed absent after root install, Expo config/export and CocoaPods. npm left the lock unchanged. |
+| `npm run build:ios:simulator` | 1 | CocoaPods reached dependency installation, then got `Errno::EPERM` opening the default user cache's `Pods/VERSION`. Xcode was not reached. |
+| In `ios`: `CP_CACHE_DIR="$PWD/../.cache/cocoapods-cache" CP_HOME_DIR="$PWD/../.cache/cocoapods-home" TMPDIR="$PWD/../.cache/tmp" COCOAPODS_DISABLE_STATS=true EXPO_NO_TELEMETRY=1 pod install --no-repo-update --verbose` | 130 | Trunk bootstrap fetched `CocoaPods-version.yml` from `cdn.cocoapods.org`. The log showed no pod shard request. The download for `ReactNativeDependencies (0.88.0)` from `repo.reactnative.dev` succeeded, then `tar` reported `No space left on device` extracting `ReactNativeDependenciesHeaders.xcframework`. Interrupted the stalled command after the error. |
+| `COCOAPODS_SKIP_CACHE=1 CP_HOME_DIR="$PWD/.cache/cocoapods-home" COCOAPODS_SKIP_SEARCH=1 npm run build:ios:simulator` | 66 | After freeing the two caches created by this run, CocoaPods installed 102 pods from 103 Podfile dependencies. Xcode then reported `'ios/JumpLab.xcworkspace' is not a workspace file.` and CoreSimulator reported `Connection refused`. |
+| `COCOAPODS_SKIP_CACHE=1 CP_HOME_DIR="$PWD/.cache/cocoapods-home" COCOAPODS_DISABLE_STATS=true COCOAPODS_SKIP_SEARCH=1 EXPO_NO_TELEMETRY=1 pod install --project-directory=ios --no-repo-update` | 0 | Independently repeated the successful CocoaPods step. It retained the generated lock. |
+| `cd ios && xcodebuild -workspace JumpLab.xcworkspace -scheme JumpLab -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$PWD/../.cache/DerivedData" CODE_SIGNING_ALLOWED=NO -quiet build` | 66 | The gate command reported `'JumpLab.xcworkspace' is not a workspace file.` even though `contents.xcworkspacedata` exists. Used repository-local DerivedData. |
+| `xcrun simctl list devices available` | 1 | Repeated alongside the gate. CoreSimulatorService connection became invalid and failed with POSIX code 61, `Connection refused`. |
+| `cmp ios/Pods/Manifest.lock ios/Podfile.lock`, `shasum ios/Podfile`, `test -f ios/JumpLab.xcworkspace/contents.xcworkspacedata` | 0 each | CocoaPods lock and installed manifest match. The checksum is `412c7a2cb4b1f83736c98325eb2a40bf1ee91a23` in both the computed hash and lock. The workspace descriptor exists. |
+| `JUMPLAB_SIMULATOR_UDID=round6-preflight sh scripts/smoke-ios.sh` | 2 | Missing binary preflight named the build command. No simulator boot, Metro, install, launch or XCTest ran. No pass/skip counts or screenshot attachments exist for this round. |
+| `sh -n scripts/smoke-ios.sh` | 0 | Shell syntax passed. |
+| `npm run -s typecheck`, `npm run -s lint`, `npx --no-install expo config --type public --json > /dev/null` | 0 each | TypeScript and Expo config resolved. The focused source check had zero failures. |
+| `npm run test:unit` | 0 | 50 passed, zero skipped. Three new smoke-script tests cover the missing executable, a shut-down simulator and replacement of the result bundle on the second run using stubbed simulator commands. |
+| `node --test smoke-ios.test.ts` in an isolated scratch directory with the `c4f9deb` smoke script | 1 | Expected regression control. All three new tests failed against the baseline script. |
+| `npm run test:ui` | 0 | 53 passed across five suites, zero skipped. Tests use component and store boundaries with mocks where applicable. |
+| `npm run test:native` | 0 | 11 synthetic transition checks and 10 host media, timing and receipt checks printed PASS. No athlete clips were analyzed. |
+| `npm run check:docs`, `git diff --check` | 0 each | Documented scripts, paths and IDs present. No whitespace errors. |
+| `npm run evaluate:video` | 2 | Zero annotated clips, zero accuracy observations. |
+| `npm_config_cache="$PWD/.cache/npm" npm_config_fetch_retries=0 npm run check:dependencies` | 1 | npm reached the registry advisory service and reported nine vulnerabilities, six moderate and three high, in the production dependency tree. |
+| `EXPO_NO_TELEMETRY=1 npx --no-install expo export --platform ios --output-dir .cache/ios-export` | 0 | Produced a 719-module Hermes iOS bundle and export metadata. |
+| `npm run check:secrets` | 0 | Zero matches in source, reachable Git patches and two fresh export files. Debug simulator builds load JavaScript from Metro and contain no `main.jsbundle`. This export supplies the JavaScript evidence. No linked app was available to scan. |
+| `supabase --version`, `docker info`, `psql --version` | 127 each | CLI, container tooling and SQL client absent from PATH. Stack startup, migration reset and `supabase/tests/limits.sql` were not run. |
+| `env -u JUMPLAB_TEST_DISPOSABLE npm run test:integration`, `env -u JUMPLAB_TEST_DISPOSABLE npm run test:security` | 2 each | Disposable-environment guard stopped before network requests. Zero live assertions. |
+| `JUMPLAB_TEST_DISPOSABLE=YES npm run check:database-types` | 2 | Missing CLI guard stopped before connecting or generating types. Drift remains unknown. |
+| `curl -ILsS --max-time 8 <official documentation URL> -o /dev/null` | 0 each | Expo development-build, Supabase Auth rate-limit and Apple accessibility endpoints responded from the Mac. See the official references in the README. |
+
+The nested install was present at workspace entry. Root `npm ci`, Expo config/export and CocoaPods did not recreate it, which points to workspace setup or an earlier install inside the module. Its exact origin was not observed. The build script still rejects a nested `node_modules` with exit 3.
+
+CocoaPods generated one tracked lockfile change, the `ExpoModulesCore` spec checksum. It kept the upstream `hermes-v260318099.0.2` tag from React Native's `.hermesv1version`; the pod installation used checksum-verified prebuilt Hermes 260318099.0.4. The truncated run's disk exhaustion and the default cache restriction were recovered without changing the Podfile. For the remaining Xcode failure, run the gate in an Xcode session where `xcrun simctl list devices available` succeeds, then boot an available iPhone simulator, start `CI=1 npx expo start --dev-client --port 8081`, and run `JUMPLAB_SIMULATOR_UDID=<udid> sh scripts/smoke-ios.sh`. Record XCTest pass/skip counts and screenshot attachments in `.cache/LaunchSmoke.xcresult`, then stop Metro. The picker test is expected to skip unless pointed at a disposable local account.
+
+The production audit identifies Expo tooling paths involving `node-forge` and `zod` (high) and `glob` and `minimatch` (moderate), with transitive Expo packages included in npm's total. Review Expo-compatible upgrades for those paths, refresh the 53 optional lock entries missing integrity metadata with npm, and rerun the audit, native build and export. The Round 6 pattern scan is limited to the bytes it inspected. No runtime traffic or seeded logs were captured.
+
+### Current acceptance status
+
+| ID | Status | Evidence and next verification |
+| --- | --- | --- |
+| JL-001 | Blocked (working CoreSimulator session → rerun simulator link) | Clean root install, typecheck and CocoaPods installation succeeded. Native link is outstanding. |
+| JL-002 | Local pass | Stage handoff carries all 38 IDs and records independent review and external verification as pending. Project-only changes. |
+| JL-003 | Blocked (consented original clips → trace a real production run) | The documented picker, native analyzer and estimator path has no observed real-clip result. |
+| JL-004 | Local pass | Scoped app, local Vision/AVFoundation and existing Supabase metadata paths. No added packages or services in this stage. |
+| JL-005 | Blocked (working CoreSimulator and disposable test account → run picker XCTest) | Component tests cover guidance, import and cancellation with mocks. Native picker and actual FPS prefill remain unobserved. |
+| JL-006 | Local pass | Unit timing and native edit/retiming checks passed. Retimed production inputs with unresolved capture timelines remain unsupported. |
+| JL-007 | Blocked (annotated clips for three jump types → evaluate production tracking and segmentation) | Synthetic standing, running, repeated, noise and track loss checks passed. |
+| JL-008 | Blocked (annotated unsuitable footage → run production rejection and retry) | Host checks cover ambiguous athletes, hidden feet, noise, camera displacement and missing transition evidence. |
+| JL-009 | Local pass | Host tests verify flight-time height, units and bounds. Analyze explains center-of-mass and posture limits. |
+| JL-010 | Unverified | Host tests cover summaries, timing provenance and compatible chart series. Verify rendered charts and a backend round trip. |
+| JL-011 | Blocked (annotated fixture media → run the production evaluator) | Empty manifest exited 2. The host regression rejects rejection-only coverage and requires multiple matched repeated events. |
+| JL-012 | Unverified | Incremental native decode and bounded media paths exercised by host failure checks. Verify interruption, repetition and outgoing traffic on an installed app. |
+| JL-013 | Unverified | Profile, optional inputs and paired edit behavior have component and host SQLite coverage. Verify profile persistence and edit effects on iOS with two local test sessions. |
+| JL-014 | Local pass | Versioned deterministic generation and complete prescription unit tests passed. |
+| JL-015 | Blocked (disposable loopback Supabase → run plan parity and rollback checks) | Scheduling, equipment, impact and budget scenarios passed locally. Live RPC assertions did not run. |
+| JL-016 | Local pass | Host adaptation, recovery spacing, conservative progression and final-day rollover checks passed. Experimental jump estimates stay out of training signals. |
+| JL-017 | Unverified | Host tests cover pain and fatigue guards, history preservation and reproducibility. Verify persisted rule version and change reason on an applied backend. |
+| JL-018 | Unverified | Host SQLite restart and prescribed-set tests passed. Installed-app termination during workout logging and result saving remains untested. |
+| JL-019 | Unverified | Host tests cover durable pending writes, plan dependencies and retry recovery. Verify offline cold launch, native analysis and reconnection on iOS. |
+| JL-020 | Blocked (disposable loopback Supabase → run concurrent client writes and account-switch checks) | Host tests cover account scoping, interrupted erasure and SQLite acknowledgement. Live idempotency and conflicts remain unverified. |
+| JL-021 | Unverified | Host media checks cover missing copies and corrupt receipts. Verify picker provider interruptions, cleanup and reopening on iOS. |
+| JL-022 | Blocked (Supabase CLI and container runtime → apply migrations and compare generated types) | Four tracked migrations and provisional types. No applied-schema evidence or type-drift comparison. |
+| JL-023 | Unverified | PKCE, secure storage and mocked lifecycle paths exist. Verify signup, confirmation, recovery, foreground refresh and revoked tokens with local Auth and iOS. |
+| JL-024 | Blocked (disposable loopback Supabase → run anonymous and two-account permission matrix) | RLS, live-account checks, grants and scoped profile identity are in source. No live permission assertions ran. |
+| JL-025 | Blocked (disposable backend and linked simulator app → run boundary checks and scan linked assets) | Limited export and source/history scan found zero matches. Workout timestamp and canonical profile protections have existing RPC regressions pending execution. |
+| JL-026 | Blocked (disposable backend and hosted Auth access → run quota checks and inspect hosted controls) | SQL and client quota cases were not executed. Local declarations are available for review. |
+| JL-027 | Blocked (disposable loopback Supabase and installed app → verify deletion and restart) | Existing tests cover old tokens and residual rows once run against a live stack. Installed app cleanup is unverified. |
+| JL-028 | Unverified | Pattern scan and focused source lint passed. Seeded runtime logs, outgoing traffic and actual provider retention await verification. |
+| JL-029 | Blocked (linked simulator app → render navigation, history and progress) | Component checks passed. No screenshot captures from this run. |
+| JL-030 | Blocked (working simulator and signed iPhone → run accessibility layout and assistive-technology checks) | Component semantics and targets passed. No large-text/dark rendering, physical VoiceOver or focus observations. |
+| JL-031 | Unverified | Mocked UI tests cover analysis failure and retry, navigation, offline queue and interrupted erasure. Confirm on installed iOS. |
+| JL-032 | Unverified | Production signposts and evaluator instrumentation exist. Zero simulator or device latency, peak-memory or responsiveness measurements. |
+| JL-033 | Blocked (disposable loopback Supabase → run live validation suites) | 50 unit tests, 53 component tests and 21 native host check lines passed. Zero live backend assertions. |
+| JL-034 | Blocked (working CoreSimulator session → build, launch and repeat XCTest smoke) | Clean install succeeded and CocoaPods generated the matching manifest. Xcode failed with exit 66. |
+| JL-035 | Failed | Docs and export scan passed. The advisory gate returned exit 1 with nine vulnerabilities. Review compatible upstream updates and repeat the checks. |
+| JL-036 | Blocked (Apple signing team, provisioned iPhone and consented clips → install and record on-device flows) | Zero physical-device observations. Record device/OS/build, clip details and picker, offline, interruption, workout and accessibility outcomes. |
+| JL-037 | Blocked (signed iPhone build, consented clips and Instruments → measure repeated device analysis runs) | Zero physical latency, peak memory or thermal observations. Use the protocol in Measurement. |
+| JL-038 | Local pass | This handoff records current command outcomes, test boundaries and prerequisites by criterion. Independent review is pending. |
+
+### External prerequisites
+
+- Add consented annotated originals for standing, running and repeated jumps, timing variants and rejection cases to `fixtures/media/` and `fixtures/manifest.json`. Run the evaluator and record sample counts, errors and missing coverage.
+- Provide an Apple development team or signing identity and a provisioned iPhone with Developer Mode. Install the bundled Release build and collect the JL-036 and JL-037 records.
+- Use an Xcode session with working CoreSimulator and sufficient writable disk space for DerivedData. Keep npm, the CocoaPods CDN and React Native's Maven endpoint reachable. GitHub and CMake are required if Hermes falls back to a source build.
+- Provide the Supabase CLI, compatible container runtime and `psql`. Follow [backend setup](BACKEND.md) to start and reset a disposable loopback stack, apply migrations, run the SQL limits check, review generated types and execute both backend suites.
+- Obtain access to inspect hosted Supabase Auth limits, redirects and retention separately. Use live official Expo, Apple and Supabase documentation for final platform and configuration review. Public documentation access was available in this round.
+
+## Historical verification
+
 ## Round 5, stage S1, iteration 4 on November 19
 
 Verified from `2a13d41` on macOS 15.7.3 (24G419), Xcode 26.3 (17C529), Node v24.21.0 and npm 12.2.0. Commands started in the JumpLab root unless shown otherwise.
@@ -254,11 +351,11 @@ Verified from `18bbe2e` on 2026-11-18 (MST), macOS 15.7.3 (24G419), Xcode 26.3 (
 
 The clean install, simulator link and launch, dependency audit, built-app scan and database type regeneration are stage S2 work. A signed physical install, device measurements and consented original footage remain outstanding. The previous round’s results follow as historical evidence.
 
-## Round 4 implementation handoff
+## Round 4 implementation handoff (historical)
 
 Updated 2026-11-18 in the isolated implementation checkout following Astra’s review of `a5b903c`. The historical checks below were not carried forward as round 5 passes.
 
-## Executed checks
+### Executed checks (historical)
 
 | Check | Observed result |
 | --- | --- |
@@ -278,7 +375,7 @@ Updated 2026-11-18 in the isolated implementation checkout following Astra’s r
 
 Host toolchain and exact setup commands are in [README](../README.md). The real-video and profiler protocols are in [Measurement](MEASUREMENT.md). Backend setup, configuration, and real-client checks are in [Backend](BACKEND.md).
 
-## Acceptance evidence
+### Acceptance evidence (historical)
 
 **Local pass** identifies a completed host check. **Failed** records an executed failing check. **Blocked** names a missing prerequisite. **Unverified** identifies a remaining verification step. Real-video sample size was zero. Device validation and physical performance measurements remain outstanding.
 

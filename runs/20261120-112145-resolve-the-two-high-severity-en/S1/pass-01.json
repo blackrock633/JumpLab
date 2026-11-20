@@ -1,0 +1,56 @@
+{
+  "run": "20261120-112145-resolve-the-two-high-severity-en",
+  "stage": "S1",
+  "iteration": 1,
+  "engineer": "blocked",
+  "local_code_checkpoint": "adad5df3448869d0e6db734bf7e839ab5292dea4",
+  "review": "reject",
+  "approved": false,
+  "checks": [
+    {
+      "name": "typecheck",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "lint",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "expo-config",
+      "status": "pass",
+      "required": false
+    },
+    {
+      "name": "ios-build:JumpLab",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:unit-tests",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:ui-tests",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:docs-check",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:secrets-check",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "name": "spec:native-host-tests",
+      "status": "pass",
+      "required": false
+    }
+  ]
+}
